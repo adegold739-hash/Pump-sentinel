@@ -4,6 +4,7 @@ import requests
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+from database import init_database, add_token, get_tokens
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
@@ -24,7 +25,9 @@ def health():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🛡️ Pump Sentinel is online!\n\n"
-        "Blockchain monitoring system is being built."
+        "Use /watch TOKEN_ADDRESS to monitor a token.\n"
+        "Use /list to see your watched tokens.\n"
+        "Use /status to check connections."
     )
 
 
@@ -76,6 +79,56 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "❌ You need to provide a token address.\n\n"
+            "Example:\n"
+            "/watch TOKEN_ADDRESS"
+        )
+        return
+
+    token_address = context.args[0].strip()
+
+    if len(token_address) < 30:
+        await update.message.reply_text(
+            "❌ That doesn't look like a valid Solana token address."
+        )
+        return
+
+    added = add_token(token_address)
+
+    if added:
+        await update.message.reply_text(
+            f"👀 Now watching:\n\n{token_address}\n\n"
+            "Monitoring will be added next."
+        )
+    else:
+        await update.message.reply_text(
+            "👀 I'm already watching that token."
+        )
+
+
+async def list_tokens(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tokens = get_tokens()
+
+    if not tokens:
+        await update.message.reply_text(
+            "📭 You're not watching any tokens yet."
+        )
+        return
+
+    message = "👀 Watched tokens:\n\n"
+
+    for number, token in enumerate(tokens, start=1):
+        message += f"{number}. `{token}`\n"
+
+    await update.message.reply_text(
+        message,
+        parse_mode="Markdown"
+    )
+
+
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
@@ -87,6 +140,8 @@ def main():
             "TELEGRAM_BOT_TOKEN is missing."
         )
 
+    init_database()
+
     threading.Thread(
         target=run_web_server,
         daemon=True
@@ -97,6 +152,8 @@ def main():
     bot.add_handler(CommandHandler("start", start))
     bot.add_handler(CommandHandler("ping", ping))
     bot.add_handler(CommandHandler("status", status))
+    bot.add_handler(CommandHandler("watch", watch))
+    bot.add_handler(CommandHandler("list", list_tokens))
 
     print("🛡️ Pump Sentinel is running...")
 
