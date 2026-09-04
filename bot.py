@@ -1,45 +1,79 @@
 import os
 import threading
+import requests
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 
-# Web server for Render
 app = Flask(__name__)
+
 
 @app.route("/")
 def home():
     return "🛡️ Pump Sentinel is online!"
+
 
 @app.route("/health")
 def health():
     return "OK"
 
 
-# Telegram commands
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🛡️ Pump Sentinel is online!\n\n"
-        "I am your Pump.fun monitoring bot.\n\n"
-        "More monitoring features are coming soon."
+        "Blockchain monitoring system is being built."
     )
 
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🟢 Pump Sentinel is alive and responding!"
+        "🟢 Pump Sentinel is alive!"
     )
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🛡️ Pump Sentinel Commands\n\n"
-        "/start - Start the bot\n"
-        "/ping - Check if the bot is alive\n"
-        "/help - Show commands"
-    )
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not HELIUS_API_KEY:
+        await update.message.reply_text(
+            "🔴 Helius API key is missing."
+        )
+        return
+
+    try:
+        url = (
+            "https://mainnet.helius-rpc.com/"
+            f"?api-key={HELIUS_API_KEY}"
+        )
+
+        response = requests.post(
+            url,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getHealth"
+            },
+            timeout=10
+        )
+
+        if response.ok:
+            await update.message.reply_text(
+                "🟢 Pump Sentinel\n\n"
+                "Telegram: ONLINE ✅\n"
+                "Helius: CONNECTED ✅"
+            )
+        else:
+            await update.message.reply_text(
+                "🟡 Telegram: ONLINE\n"
+                "🔴 Helius connection failed."
+            )
+
+    except Exception:
+        await update.message.reply_text(
+            "🟡 Telegram: ONLINE\n"
+            "🔴 Could not reach Helius."
+        )
 
 
 def run_web_server():
@@ -50,24 +84,21 @@ def run_web_server():
 def main():
     if not TOKEN:
         raise ValueError(
-            "TELEGRAM_BOT_TOKEN environment variable is missing."
+            "TELEGRAM_BOT_TOKEN is missing."
         )
 
-    # Start Render's web server
-    web_thread = threading.Thread(
+    threading.Thread(
         target=run_web_server,
         daemon=True
-    )
-    web_thread.start()
+    ).start()
 
-    # Start Telegram bot
     bot = Application.builder().token(TOKEN).build()
 
     bot.add_handler(CommandHandler("start", start))
     bot.add_handler(CommandHandler("ping", ping))
-    bot.add_handler(CommandHandler("help", help_command))
+    bot.add_handler(CommandHandler("status", status))
 
-    print("🛡️ Pump Sentinel Telegram bot is running...")
+    print("🛡️ Pump Sentinel is running...")
 
     bot.run_polling()
 
