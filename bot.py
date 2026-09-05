@@ -216,9 +216,9 @@ def main():
     bot.add_handler(CommandHandler("start", start))
     bot.add_handler(CommandHandler("ping", ping))
     bot.add_handler(CommandHandler("status", status))
-    bot.add_handler(CommandHandler("watch", watch))
-    bot.add_handler(CommandHandler("list", list_tokens))
-
+bot.add_handler(CommandHandler("watch", watch))
+bot.add_handler(CommandHandler("list", list_tokens))
+bot.add_handler(CommandHandler("whales", whales))
     print("🛡️ Pump Sentinel Telegram bot is running...")
 
     bot.run_polling()
