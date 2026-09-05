@@ -13,6 +13,7 @@ from solana import get_token_info
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 
+
 app = Flask(__name__)
 
 
@@ -27,19 +28,22 @@ def health():
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
         "🛡️ Pump Sentinel\n\n"
         "Commands:\n"
         "/watch TOKEN_ADDRESS - Watch a token\n"
         "/info TOKEN_ADDRESS - Get token information\n"
-        "/activity TOKEN_ADDRESS - Recent activity\n"
         "/list - Show watched tokens\n"
+        "/activity TOKEN_ADDRESS - Recent activity\n"
+        "/tx SIGNATURE - Analyze a transaction\n"
         "/status - Check connections\n"
         "/ping - Test the bot"
     )
 
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
         "🟢 Pump Sentinel is alive!"
     )
@@ -48,12 +52,15 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not HELIUS_API_KEY:
+
         await update.message.reply_text(
             "🔴 Helius API key is missing."
         )
+
         return
 
     try:
+
         url = (
             "https://mainnet.helius-rpc.com/"
             f"?api-key={HELIUS_API_KEY}"
@@ -70,18 +77,22 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         if response.ok:
+
             await update.message.reply_text(
                 "🟢 Pump Sentinel\n\n"
                 "Telegram: ONLINE ✅\n"
                 "Helius: CONNECTED ✅"
             )
+
         else:
+
             await update.message.reply_text(
                 "🟡 Telegram: ONLINE\n"
                 "🔴 Helius connection failed."
             )
 
     except Exception:
+
         await update.message.reply_text(
             "🟡 Telegram: ONLINE\n"
             "🔴 Could not reach Helius."
@@ -91,19 +102,23 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
+
         await update.message.reply_text(
             "❌ Give me a Solana token address.\n\n"
             "Example:\n"
             "/watch TOKEN_ADDRESS"
         )
+
         return
 
     token_address = context.args[0].strip()
 
     if len(token_address) < 32:
+
         await update.message.reply_text(
             "❌ That doesn't look like a valid Solana address."
         )
+
         return
 
     await update.message.reply_text(
@@ -113,17 +128,21 @@ async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     token_info, error = get_token_info(token_address)
 
     if error:
+
         await update.message.reply_text(
             f"❌ {error}"
         )
+
         return
 
     added = add_token(token_address)
 
     if not added:
+
         await update.message.reply_text(
             "👀 I'm already watching that token."
         )
+
         return
 
     name = token_info["name"]
@@ -140,19 +159,23 @@ async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
+
         await update.message.reply_text(
             "❌ Give me a Solana token address.\n\n"
             "Example:\n"
             "/info TOKEN_ADDRESS"
         )
+
         return
 
     token_address = context.args[0].strip()
 
     if len(token_address) < 32:
+
         await update.message.reply_text(
             "❌ That doesn't look like a valid Solana address."
         )
+
         return
 
     await update.message.reply_text(
@@ -162,15 +185,22 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     token_info, error = get_token_info(token_address)
 
     if error:
+
         await update.message.reply_text(
             f"❌ {error}"
         )
+
         return
 
     watched_tokens = get_tokens()
+
     watching = token_address in watched_tokens
 
-    watching_status = "👀 YES" if watching else "❌ NO"
+    watching_status = (
+        "👀 YES"
+        if watching
+        else "❌ NO"
+    )
 
     await update.message.reply_text(
         f"🪙 {token_info['name']}\n"
@@ -184,40 +214,79 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def list_tokens(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
-    if not HELIUS_API_KEY:
+    tokens = get_tokens()
+
+    if not tokens:
+
         await update.message.reply_text(
-            "🔴 Helius API key is missing."
+            "📭 You're not watching any tokens yet."
         )
+
         return
 
+    message = "👀 Watched tokens:\n\n"
+
+    for number, token in enumerate(tokens, start=1):
+
+        message += (
+            f"{number}. `{token}`\n"
+        )
+
+    await update.message.reply_text(
+        message,
+        parse_mode="Markdown"
+    )
+
+
+async def activity(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     if not context.args:
+
         await update.message.reply_text(
             "❌ Give me a Solana token address.\n\n"
             "Example:\n"
             "/activity TOKEN_ADDRESS"
         )
+
         return
 
     token_address = context.args[0].strip()
 
     if len(token_address) < 32:
+
         await update.message.reply_text(
             "❌ That doesn't look like a valid Solana address."
         )
+
+        return
+
+    if not HELIUS_API_KEY:
+
+        await update.message.reply_text(
+            "🔴 Helius API key is missing."
+        )
+
         return
 
     await update.message.reply_text(
         "📡 Checking recent activity..."
     )
 
-    url = (
-        "https://mainnet.helius-rpc.com/"
-        f"?api-key={HELIUS_API_KEY}"
-    )
-
     try:
+
+        url = (
+            "https://mainnet.helius-rpc.com/"
+            f"?api-key={HELIUS_API_KEY}"
+        )
+
         response = requests.post(
             url,
             json={
@@ -235,57 +304,70 @@ async def activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         if not response.ok:
+
             await update.message.reply_text(
                 "❌ Helius request failed."
             )
+
             return
 
         data = response.json()
 
         if "error" in data:
+
             await update.message.reply_text(
                 "❌ Helius returned an error."
             )
+
             return
 
-        transactions = data.get("result", [])
+        transactions = data.get(
+            "result",
+            []
+        )
 
         if not transactions:
+
             await update.message.reply_text(
                 "📭 No recent transactions found."
             )
+
             return
 
         message = (
             "📡 Recent Activity\n\n"
-            f"📍 `{token_address}`\n"
-            f"🔎 Transactions found: {len(transactions)}\n\n"
+            f"📍 {token_address}\n"
+            f"🔎 Transactions found: "
+            f"{len(transactions)}\n\n"
         )
 
-        for number, tx in enumerate(transactions, start=1):
+        for number, tx in enumerate(
+            transactions,
+            start=1
+        ):
 
-            signature = tx.get("signature", "Unknown")
-            block_time = tx.get("blockTime")
+            status_icon = (
+                "✅"
+                if tx.get("err") is None
+                else "❌"
+            )
 
-            if block_time:
-                time_text = str(block_time)
-            else:
-                time_text = "Unknown"
+            signature = tx.get(
+                "signature",
+                "Unknown"
+            )
 
-            status = (
-                "❌ Failed"
-                if tx.get("err")
-                else "✅ Success"
+            block_time = tx.get(
+                "blockTime",
+                "Unknown"
             )
 
             message += (
-                f"{number}. {status}\n"
-                f"⏱️ {time_text}\n"
+                f"{number}. {status_icon} "
+                f"{'Success' if status_icon == '✅' else 'Failed'}\n"
+                f"⏱️ {block_time}\n"
                 f"🔗 `{signature}`\n\n"
             )
-
-        if len(message) > 4000:
-            message = message[:3950] + "\n..."
 
         await update.message.reply_text(
             message,
@@ -293,42 +375,246 @@ async def activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     except requests.RequestException:
+
         await update.message.reply_text(
             "❌ Could not connect to Helius."
         )
 
+    except Exception as error:
 
-async def list_tokens(
+        print(
+            f"Activity error: {error}"
+        )
+
+        await update.message.reply_text(
+            "❌ Something went wrong while "
+            "checking activity."
+        )
+
+
+async def tx(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    tokens = get_tokens()
+    if not context.args:
 
-    if not tokens:
         await update.message.reply_text(
-            "📭 You're not watching any tokens yet."
+            "❌ Give me a transaction signature.\n\n"
+            "Example:\n"
+            "/tx SIGNATURE"
         )
+
         return
 
-    message = "👀 Watched tokens:\n\n"
+    signature = context.args[0].strip()
 
-    for number, token in enumerate(tokens, start=1):
-        message += f"{number}. `{token}`\n"
+    if not HELIUS_API_KEY:
+
+        await update.message.reply_text(
+            "🔴 Helius API key is missing."
+        )
+
+        return
 
     await update.message.reply_text(
-        message,
-        parse_mode="Markdown"
+        "🔍 Analyzing transaction..."
     )
+
+    try:
+
+        url = (
+            "https://api.helius.xyz/v0/transactions"
+            f"?api-key={HELIUS_API_KEY}"
+        )
+
+        response = requests.post(
+            url,
+            json={
+                "transactions": [
+                    signature
+                ]
+            },
+            timeout=15
+        )
+
+        if not response.ok:
+
+            print(
+                "Transaction API response:",
+                response.text
+            )
+
+            await update.message.reply_text(
+                "❌ Helius transaction request failed."
+            )
+
+            return
+
+        data = response.json()
+
+        if not data:
+
+            await update.message.reply_text(
+                "❌ Transaction was not found "
+                "or could not be parsed."
+            )
+
+            return
+
+        transaction = data[0]
+
+        tx_type = transaction.get(
+            "type",
+            "UNKNOWN"
+        )
+
+        description = transaction.get(
+            "description",
+            "No description available."
+        )
+
+        timestamp = transaction.get(
+            "timestamp",
+            "Unknown"
+        )
+
+        fee = transaction.get(
+            "fee",
+            0
+        )
+
+        native_transfers = transaction.get(
+            "nativeTransfers",
+            []
+        )
+
+        token_transfers = transaction.get(
+            "tokenTransfers",
+            []
+        )
+
+        message = (
+            "🔍 Transaction Analysis\n\n"
+            f"🧩 Type: {tx_type}\n"
+            f"📝 Description: {description}\n"
+            f"⏱️ Timestamp: {timestamp}\n"
+            f"💸 Fee: {fee} lamports\n\n"
+        )
+
+        if native_transfers:
+
+            message += (
+                "💰 SOL Transfers:\n"
+            )
+
+            for transfer in native_transfers[:5]:
+
+                sender = transfer.get(
+                    "fromUserAccount",
+                    "Unknown"
+                )
+
+                receiver = transfer.get(
+                    "toUserAccount",
+                    "Unknown"
+                )
+
+                amount = transfer.get(
+                    "amount",
+                    0
+                )
+
+                sol_amount = (
+                    amount / 1_000_000_000
+                )
+
+                message += (
+                    f"• {sol_amount:.6f} SOL\n"
+                    f"  From: `{sender}`\n"
+                    f"  To: `{receiver}`\n\n"
+                )
+
+        if token_transfers:
+
+            message += (
+                "🪙 Token Transfers:\n"
+            )
+
+            for transfer in token_transfers[:5]:
+
+                mint = transfer.get(
+                    "mint",
+                    "Unknown"
+                )
+
+                from_account = transfer.get(
+                    "fromUserAccount",
+                    "Unknown"
+                )
+
+                to_account = transfer.get(
+                    "toUserAccount",
+                    "Unknown"
+                )
+
+                token_amount = transfer.get(
+                    "tokenAmount",
+                    transfer.get(
+                        "rawTokenAmount",
+                        "Unknown"
+                    )
+                )
+
+                message += (
+                    f"• Amount: {token_amount}\n"
+                    f"  Mint: `{mint}`\n"
+                    f"  From: `{from_account}`\n"
+                    f"  To: `{to_account}`\n\n"
+                )
+
+        message += (
+            f"🔗 Signature:\n"
+            f"`{signature}`"
+        )
+
+        if len(message) > 4000:
+
+            message = message[:3950] + (
+                "\n\n⚠️ Message shortened."
+            )
+
+        await update.message.reply_text(
+            message,
+            parse_mode="Markdown"
+        )
+
+    except requests.RequestException:
+
+        await update.message.reply_text(
+            "❌ Could not connect to Helius."
+        )
+
+    except Exception as error:
+
+        print(
+            f"Transaction analysis error: {error}"
+        )
+
+        await update.message.reply_text(
+            "❌ Something went wrong while "
+            "analyzing the transaction."
+        )
 
 
 def run_web_server():
 
     port = int(
-        os.environ.get("PORT", 10000)
+        os.environ.get(
+            "PORT",
+            10000
+        )
     )
-
-    print(f"🌐 Web server starting on port {port}...")
 
     app.run(
         host="0.0.0.0",
@@ -339,9 +625,12 @@ def run_web_server():
 
 def main():
 
-    print("🛡️ Starting Pump Sentinel...")
+    print(
+        "🛡️ Starting Pump Sentinel..."
+    )
 
     if not TELEGRAM_BOT_TOKEN:
+
         raise ValueError(
             "TELEGRAM_BOT_TOKEN is missing."
         )
@@ -361,34 +650,64 @@ def main():
     )
 
     bot.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start
+        )
     )
 
     bot.add_handler(
-        CommandHandler("ping", ping)
+        CommandHandler(
+            "ping",
+            ping
+        )
     )
 
     bot.add_handler(
-        CommandHandler("status", status)
+        CommandHandler(
+            "status",
+            status
+        )
     )
 
     bot.add_handler(
-        CommandHandler("watch", watch)
+        CommandHandler(
+            "watch",
+            watch
+        )
     )
 
     bot.add_handler(
-        CommandHandler("info", info)
+        CommandHandler(
+            "info",
+            info
+        )
     )
 
     bot.add_handler(
-        CommandHandler("activity", activity)
+        CommandHandler(
+            "list",
+            list_tokens
+        )
     )
 
     bot.add_handler(
-        CommandHandler("list", list_tokens)
+        CommandHandler(
+            "activity",
+            activity
+        )
     )
 
-    print("🟢 Telegram bot is starting...")
+    bot.add_handler(
+        CommandHandler(
+            "tx",
+            tx
+        )
+    )
+
+    print(
+        "🛡️ Pump Sentinel Telegram bot is running..."
+    )
 
     bot.run_polling()
 
