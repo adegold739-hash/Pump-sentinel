@@ -578,9 +578,7 @@ def collect_transfers(transaction):
     transfers = []
 
     for instruction in collect_instructions(transaction):
-        parsed = extract_parsed_instruction(
-            instruction
-        )
+        parsed = extract_parsed_instruction(instruction)
 
         if not parsed:
             continue
@@ -619,23 +617,38 @@ def collect_transfers(transaction):
         )
 
         token_amount = info.get("amount")
-
-        if token_amount is None:
-            token_amount = (
-                info.get("tokenAmount", {})
-                .get("uiAmount")
-            )
-
-        decimals = (
-            info.get("decimals")
-            or info.get("tokenAmount", {})
-            .get("decimals")
+        token_amount_info = info.get(
+            "tokenAmount",
+            {},
         )
 
-        if decimals is not None:
+        # Prefer Helius/Solana's UI amount when available.
+        # This prevents incorrect decimal conversion.
+        ui_amount = token_amount_info.get(
+            "uiAmount"
+        )
+
+        ui_amount_string = token_amount_info.get(
+            "uiAmountString"
+        )
+
+        decimals = info.get(
+            "decimals"
+        )
+
+        if decimals is None:
+            decimals = token_amount_info.get(
+                "decimals"
+            )
+
+        if ui_amount is not None:
+            display_amount = ui_amount
+        elif ui_amount_string is not None:
+            display_amount = ui_amount_string
+        elif token_amount is not None and decimals is not None:
             try:
                 display_amount = (
-                    float(token_amount) /
+                    int(token_amount) /
                     (10 ** int(decimals))
                 )
             except (
