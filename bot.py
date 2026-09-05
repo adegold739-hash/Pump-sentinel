@@ -1,7 +1,7 @@
 import os
 import threading
-import requests
 
+import requests
 from flask import Flask
 from telegram import Update
 from telegram.ext import (
@@ -29,13 +29,13 @@ HELIUS_URL = (
     f"?api-key={HELIUS_API_KEY}"
 )
 
-app = Flask(__name__)
-
 SOL_MINT = "So11111111111111111111111111111111111111112"
+
+app = Flask(__name__)
 
 
 # =========================================================
-# BASIC WEB SERVER
+# WEB SERVER
 # =========================================================
 
 @app.route("/")
@@ -54,12 +54,12 @@ def run_web_server():
     app.run(
         host="0.0.0.0",
         port=port,
-        use_reloader=False
+        use_reloader=False,
     )
 
 
 # =========================================================
-# HELPERS
+# GENERAL HELPERS
 # =========================================================
 
 def shorten_address(address, length=8):
@@ -96,20 +96,31 @@ def helius_rpc(method, params):
         )
 
         if not response.ok:
-            return None, "Helius request failed."
+            return None, (
+                f"Helius request failed "
+                f"(HTTP {response.status_code})."
+            )
 
         data = response.json()
 
         if "error" in data:
-            return None, data["error"].get(
-                "message",
-                "Helius returned an error."
-            )
+            error = data["error"]
+
+            if isinstance(error, dict):
+                return None, error.get(
+                    "message",
+                    "Helius returned an error.",
+                )
+
+            return None, str(error)
 
         return data.get("result"), None
 
     except requests.RequestException as error:
         return None, f"Network error: {error}"
+
+    except ValueError:
+        return None, "Helius returned invalid JSON."
 
 
 # =========================================================
@@ -118,7 +129,7 @@ def helius_rpc(method, params):
 
 async def start_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
     await update.message.reply_text(
         "🟢 Pump Sentinel\n\n"
@@ -140,7 +151,7 @@ async def start_command(
 
 async def ping_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
     await update.message.reply_text(
         "🏓 Pong!\n\n"
@@ -154,7 +165,7 @@ async def ping_command(
 
 async def status_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
     telegram_status = (
         "ONLINE ✅"
@@ -181,7 +192,7 @@ async def status_command(
 
 async def watch_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
     if not context.args:
         await update.message.reply_text(
@@ -193,7 +204,8 @@ async def watch_command(
 
     if len(token_address) < 30:
         await update.message.reply_text(
-            "❌ That doesn't look like a valid Solana token address."
+            "❌ That doesn't look like a valid "
+            "Solana token address."
         )
         return
 
@@ -216,7 +228,7 @@ async def watch_command(
 
 async def list_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
     tokens = get_tokens()
 
@@ -236,7 +248,7 @@ async def list_command(
 
     await update.message.reply_text(
         message,
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
 
 
@@ -246,7 +258,7 @@ async def list_command(
 
 async def info_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
     if not context.args:
         await update.message.reply_text(
@@ -259,8 +271,8 @@ async def info_command(
     result, error = helius_rpc(
         "getAsset",
         {
-            "id": token_address
-        }
+            "id": token_address,
+        },
     )
 
     if error:
@@ -300,7 +312,7 @@ async def info_command(
 
 async def activity_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
     if not context.args:
         await update.message.reply_text(
@@ -315,9 +327,9 @@ async def activity_command(
         [
             token_address,
             {
-                "limit": 10
-            }
-        ]
+                "limit": 10,
+            },
+        ],
     )
 
     if error:
@@ -339,11 +351,11 @@ async def activity_command(
 
     for number, transaction in enumerate(
         result,
-        start=1
+        start=1,
     ):
         signature = transaction.get(
             "signature",
-            ""
+            "",
         )
 
         status = (
@@ -359,7 +371,7 @@ async def activity_command(
 
     await update.message.reply_text(
         message,
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
 
 
@@ -370,45 +382,44 @@ async def activity_command(
 def get_fee_payer(transaction):
     message = transaction.get(
         "transaction",
-        {}
+        {},
     ).get(
         "message",
-        {}
+        {},
     )
 
     account_keys = message.get(
         "accountKeys",
-        []
+        [],
     )
 
     for key in account_keys:
-        if isinstance(key, dict):
-            if key.get("signer"):
-                return key.get("pubkey")
+        if isinstance(key, dict) and key.get("signer"):
+            return key.get("pubkey")
 
-    if account_keys:
-        first = account_keys[0]
+    if not account_keys:
+        return None
 
-        if isinstance(first, dict):
-            return first.get("pubkey")
+    first = account_keys[0]
 
-        return first
+    if isinstance(first, dict):
+        return first.get("pubkey")
 
-    return None
+    return first
 
 
 def get_account_keys(transaction):
     message = transaction.get(
         "transaction",
-        {}
+        {},
     ).get(
         "message",
-        {}
+        {},
     )
 
     return message.get(
         "accountKeys",
-        []
+        [],
     )
 
 
@@ -417,12 +428,12 @@ def get_token_balance_changes(transaction):
 
     pre_balances = meta.get(
         "preTokenBalances",
-        []
+        [],
     )
 
     post_balances = meta.get(
         "postTokenBalances",
-        []
+        [],
     )
 
     pre_map = {}
@@ -430,34 +441,29 @@ def get_token_balance_changes(transaction):
 
     for balance in pre_balances:
         account_index = balance.get(
-            "accountIndex"
+            "accountIndex",
         )
-
         pre_map[account_index] = balance
 
     for balance in post_balances:
         account_index = balance.get(
-            "accountIndex"
+            "accountIndex",
         )
-
         post_map[account_index] = balance
 
-    all_indexes = (
-        set(pre_map) |
-        set(post_map)
-    )
+    all_indexes = set(pre_map) | set(post_map)
 
     changes = []
 
     for account_index in all_indexes:
         pre = pre_map.get(
             account_index,
-            {}
+            {},
         )
 
         post = post_map.get(
             account_index,
-            {}
+            {},
         )
 
         mint = (
@@ -482,10 +488,7 @@ def get_token_balance_changes(transaction):
             or 0
         )
 
-        net_change = (
-            post_amount -
-            pre_amount
-        )
+        net_change = post_amount - pre_amount
 
         changes.append({
             "account_index": account_index,
@@ -495,6 +498,7 @@ def get_token_balance_changes(transaction):
             "after": post_amount,
             "net": net_change,
         })
+
     return changes
 
 
@@ -503,33 +507,27 @@ def get_sol_balance_changes(transaction):
 
     pre_balances = meta.get(
         "preBalances",
-        []
+        [],
     )
 
     post_balances = meta.get(
         "postBalances",
-        []
+        [],
     )
 
     changes = []
 
-    for index in range(
-        min(
-            len(pre_balances),
-            len(post_balances)
-        )
-    ):
+    count = min(
+        len(pre_balances),
+        len(post_balances),
+    )
+
+    for index in range(count):
         pre = pre_balances[index]
         post = post_balances[index]
 
-        net_lamports = (
-            post - pre
-        )
-
-        net_sol = (
-            net_lamports /
-            1_000_000_000
-        )
+        net_lamports = post - pre
+        net_sol = net_lamports / 1_000_000_000
 
         changes.append({
             "account_index": index,
@@ -540,75 +538,46 @@ def get_sol_balance_changes(transaction):
 
 
 def extract_parsed_instruction(instruction):
-    if not isinstance(
-        instruction,
-        dict
-    ):
+    if not isinstance(instruction, dict):
         return None
 
-    parsed = instruction.get(
-        "parsed"
-    )
-
-    if not parsed:
-        return None
-
-    return parsed
+    return instruction.get("parsed")
 
 
 def collect_instructions(transaction):
     message = transaction.get(
         "transaction",
-        {}
+        {},
     ).get(
         "message",
-        {}
+        {},
     )
 
-    instructions = []
+    instructions = list(
+        message.get("instructions", [])
+    )
 
-    for instruction in message.get(
-        "instructions",
-        []
-    ):
-        instructions.append(
-            instruction
-        )
+    meta = transaction.get("meta") or {}
 
-    meta = transaction.get(
-        "meta"
-    ) or {}
-
-    inner_instructions = meta.get(
+    for group in meta.get(
         "innerInstructions",
-        []
-    )
-
-    for group in inner_instructions:
-        for instruction in group.get(
-            "instructions",
-            []
-        ):
-            instructions.append(
-                instruction
-            )
+        [],
+    ):
+        instructions.extend(
+            group.get("instructions", [])
+        )
 
     return instructions
 
 
 # =========================================================
-# CLEAN TOKEN TRANSFER PARSER
+# TOKEN TRANSFER PARSER
 # =========================================================
 
 def collect_transfers(transaction):
     transfers = []
 
-    instructions = collect_instructions(
-        transaction
-    )
-
-    for instruction in instructions:
-
+    for instruction in collect_instructions(transaction):
         parsed = extract_parsed_instruction(
             instruction
         )
@@ -616,34 +585,357 @@ def collect_transfers(transaction):
         if not parsed:
             continue
 
-        instruction_type = parsed.get(
-            "type"
-        )
+        instruction_type = parsed.get("type")
+        info = parsed.get("info", {})
 
-        info = parsed.get(
-            "info",
-            {}
-        )
-
-        # Only accept SPL Token transfers.
-        # System Program SOL transfers must NOT
-        # appear in the token-transfer section.
-
-        program = instruction.get(
-            "program"
-        )
-
-        program_id = instruction.get(
-            "programId"
-        )
+        program = instruction.get("program")
+        program_id = instruction.get("programId")
 
         is_token_program = (
             program in [
                 "spl-token",
-                "spl-token-2022"
+                "spl-token-2022",
             ]
             or program_id in [
                 "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-                "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnB4jM8y7D4c7c"
+                "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnB4jM8y7D4c7c",
             ]
         )
+
+        if not is_token_program:
+            continue
+
+        if instruction_type not in [
+            "transfer",
+            "transferChecked",
+        ]:
+            continue
+
+        source = info.get("source")
+        destination = info.get("destination")
+        authority = (
+            info.get("authority")
+            or info.get("owner")
+        )
+
+        token_amount = info.get("amount")
+
+        if token_amount is None:
+            token_amount = (
+                info.get("tokenAmount", {})
+                .get("uiAmount")
+            )
+
+        decimals = (
+            info.get("decimals")
+            or info.get("tokenAmount", {})
+            .get("decimals")
+        )
+
+        if decimals is not None:
+            try:
+                display_amount = (
+                    float(token_amount) /
+                    (10 ** int(decimals))
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                display_amount = token_amount
+        else:
+            display_amount = token_amount
+
+        transfers.append({
+            "source": source,
+            "destination": destination,
+            "authority": authority,
+            "amount": token_amount,
+            "display_amount": display_amount,
+            "mint": info.get("mint"),
+            "decimals": decimals,
+        })
+
+    return transfers
+
+
+# =========================================================
+# TRANSACTION INTELLIGENCE
+# =========================================================
+
+def analyze_transaction(transaction):
+    fee_payer = get_fee_payer(transaction)
+
+    meta = transaction.get("meta") or {}
+
+    fee_lamports = meta.get(
+        "fee",
+        0,
+    )
+
+    fee_sol = fee_lamports / 1_000_000_000
+
+    status = (
+        "FAILED ❌"
+        if meta.get("err")
+        else "SUCCESS ✅"
+    )
+
+    token_changes = get_token_balance_changes(
+        transaction
+    )
+
+    sol_changes = get_sol_balance_changes(
+        transaction
+    )
+
+    transfers = collect_transfers(
+        transaction
+    )
+
+    return {
+        "status": status,
+        "fee_payer": fee_payer,
+        "fee_lamports": fee_lamports,
+        "fee_sol": fee_sol,
+        "token_changes": token_changes,
+        "sol_changes": sol_changes,
+        "transfers": transfers,
+    }
+
+
+def format_transaction_report(
+    signature,
+    transaction,
+):
+    analysis = analyze_transaction(
+        transaction
+    )
+
+    lines = [
+        "🔬 Transaction Intelligence",
+        "",
+        f"📊 Status: {analysis['status']}",
+        f"💸 Fee: {analysis['fee_lamports']:,} lamports "
+        f"({analysis['fee_sol']:.9f} SOL)",
+        "",
+        "👤 Fee payer:",
+        shorten_address(
+            analysis["fee_payer"],
+            10,
+        ),
+    ]
+
+    transfers = analysis["transfers"]
+
+    if transfers:
+        lines.extend([
+            "",
+            "🪙 Token Transfers:",
+        ])
+
+        for transfer in transfers[:10]:
+            amount = transfer.get(
+                "display_amount"
+            )
+
+            source = shorten_address(
+                transfer.get("source"),
+                6,
+            )
+
+            destination = shorten_address(
+                transfer.get("destination"),
+                6,
+            )
+
+            lines.append(
+                f"• {amount} | "
+                f"{source} → {destination}"
+            )
+
+    sol_changes = [
+        change
+        for change in analysis["sol_changes"]
+        if abs(change["net_sol"]) > 0
+    ]
+
+    if sol_changes:
+        lines.extend([
+            "",
+            "◎ SOL Balance Changes:",
+        ])
+
+        for change in sol_changes[:10]:
+            lines.append(
+                f"• Account #{change['account_index']}: "
+                f"{format_sol(change['net_sol'])}"
+            )
+
+    lines.extend([
+        "",
+        "🧾 Signature:",
+        signature,
+    ])
+
+    return "\n".join(lines)
+
+
+# =========================================================
+# /TX
+# =========================================================
+
+async def tx_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not context.args:
+        await update.message.reply_text(
+            "Usage:\n/tx <transaction_signature>"
+        )
+        return
+
+    signature = context.args[0].strip()
+
+    if len(signature) < 40:
+        await update.message.reply_text(
+            "❌ That doesn't look like a valid "
+            "Solana transaction signature."
+        )
+        return
+
+    result, error = helius_rpc(
+        "getTransaction",
+        [
+            signature,
+            {
+                "encoding": "jsonParsed",
+                "maxSupportedTransactionVersion": 0,
+            },
+        ],
+    )
+
+    if error:
+        await update.message.reply_text(
+            f"❌ {error}"
+        )
+        return
+
+    if not result:
+        await update.message.reply_text(
+            "❌ Transaction not found."
+        )
+        return
+
+    report = format_transaction_report(
+        signature,
+        result,
+    )
+
+    await update.message.reply_text(
+        report
+    )
+
+
+# =========================================================
+# BOT STARTUP
+# =========================================================
+
+def create_application():
+    if not TELEGRAM_BOT_TOKEN:
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN is missing."
+        )
+
+    application = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .build()
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "ping",
+            ping_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "status",
+            status_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "watch",
+            watch_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "list",
+            list_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "info",
+            info_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "activity",
+            activity_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "tx",
+            tx_command,
+        )
+    )
+
+    return application
+
+
+def main():
+    print("Starting Pump Sentinel...")
+
+    init_database()
+
+    web_thread = threading.Thread(
+        target=run_web_server,
+        daemon=True,
+    )
+
+    web_thread.start()
+
+    application = create_application()
+
+    print("Telegram bot starting...")
+    print(
+        f"Helius: "
+        f"{'CONNECTED' if HELIUS_API_KEY else 'MISSING'}"
+    )
+
+    application.run_polling(
+        drop_pending_updates=True
+    )
+
+
+if __name__ == "__main__":
+    main()
