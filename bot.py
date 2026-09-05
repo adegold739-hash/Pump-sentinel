@@ -676,44 +676,89 @@ def collect_transfers(transaction):
 # TRANSACTION INTELLIGENCE
 # =========================================================
 
-def analyze_transaction(transaction):
-    fee_payer = get_fee_payer(transaction)
+def classify_transaction(token_changes, sol_changes, fee_payer):
+    """
+    Classify a transaction as BUY, SELL, TRANSFER, or UNKNOWN.
 
-    meta = transaction.get("meta") or {}
+    BUY:
+    - A wallet receives tokens
+    - The same wallet spends SOL
 
-    fee_lamports = meta.get(
-        "fee",
-        0,
-    )
+    SELL:
+    - A wallet sends tokens
+    - The same wallet receives SOL
 
-    fee_sol = fee_lamports / 1_000_000_000
+    TRANSFER:
+    - Tokens move without meaningful SOL movement
 
-    status = (
-        "FAILED ❌"
-        if meta.get("err")
-        else "SUCCESS ✅"
-    )
+    UNKNOWN:
+    - Pattern is unclear
+    """
 
-    token_changes = get_token_balance_changes(
-        transaction
-    )
+    if not token_changes:
+        return "UNKNOWN", None, None
 
-    sol_changes = get_sol_balance_changes(
-        transaction
-    )
+    # Group token changes by owner
+    owners = {}
 
-    transfers = collect_transfers(
-        transaction
-    )
+    for change in token_changes:
+        owner = change.get("owner")
 
-    return {
-        "status": status,
-        "fee_payer": fee_payer,
-        "fee_lamports": fee_lamports,
-        "fee_sol": fee_sol,
-        "token_changes": token_changes,
-        "sol_changes": sol_changes,
-        "transfers": transfers,
+        if not owner:
+            continue
+
+        amount = change.get("ui_amount")
+
+        if amount is None:
+            amount = change.get("amount", 0)
+
+        try:
+            amount = float(amount)
+        except (TypeError, ValueError):
+            continue
+
+        if owner not in owners:
+            owners[owner] = 0
+
+        owners[owner] += amount
+
+    # Find the main token-moving wallet
+    token_owner = None
+    token_delta = 0
+
+    for owner, delta in owners.items():
+        if abs(delta) > abs(token_delta):
+            token_owner = owner
+            token_delta = delta
+
+    if not token_owner:
+        return "UNKNOWN", None, None
+
+    # Find SOL change for the same wallet
+    sol_delta = 0
+
+    for change in sol_changes:
+        address = change.get("address")
+
+        if address == token_owner:
+            try:
+                sol_delta += float(change.get("change", 0))
+            except (TypeError, ValueError):
+                pass
+
+    # BUY = token increase + SOL decrease
+    if token_delta > 0 and sol_delta < -0.00001:
+        return "BUY", token_owner, token_delta
+
+    # SELL = token decrease + SOL increase
+    if token_delta < 0 and sol_delta > 0.00001:
+        return "SELL", token_owner, token_delta
+
+    # Token movement without meaningful SOL movement
+    if token_delta != 0 and abs(sol_delta) <= 0.00001:
+        return "TRANSFER", token_owner, token_delta
+
+    return "UNKNOWN", token_owner, token_delta
     }
 
 
