@@ -52,11 +52,9 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not HELIUS_API_KEY:
-
         await update.message.reply_text(
             "🔴 Helius API key is missing."
         )
-
         return
 
     try:
@@ -233,9 +231,7 @@ async def list_tokens(
 
     for number, token in enumerate(tokens, start=1):
 
-        message += (
-            f"{number}. `{token}`\n"
-        )
+        message += f"{number}. `{token}`\n"
 
     await update.message.reply_text(
         message,
@@ -341,23 +337,23 @@ async def activity(
             f"{len(transactions)}\n\n"
         )
 
-        for number, tx in enumerate(
+        for number, tx_data in enumerate(
             transactions,
             start=1
         ):
 
             status_icon = (
                 "✅"
-                if tx.get("err") is None
+                if tx_data.get("err") is None
                 else "❌"
             )
 
-            signature = tx.get(
+            signature = tx_data.get(
                 "signature",
                 "Unknown"
             )
 
-            block_time = tx.get(
+            block_time = tx_data.get(
                 "blockTime",
                 "Unknown"
             )
@@ -418,30 +414,38 @@ async def tx(
         return
 
     await update.message.reply_text(
-        "🔍 Analyzing transaction..."
+        "🔍 Reading raw Solana transaction..."
     )
 
     try:
 
         url = (
-            "https://api.helius.xyz/v0/transactions"
+            "https://mainnet.helius-rpc.com/"
             f"?api-key={HELIUS_API_KEY}"
         )
 
         response = requests.post(
             url,
             json={
-                "transactions": [
-                    signature
+                "jsonrpc": "2.0",
+                "id": "pump-sentinel-tx",
+                "method": "getTransaction",
+                "params": [
+                    signature,
+                    {
+                        "encoding": "jsonParsed",
+                        "commitment": "confirmed",
+                        "maxSupportedTransactionVersion": 0
+                    }
                 ]
             },
-            timeout=15
+            timeout=20
         )
 
         if not response.ok:
 
             print(
-                "Transaction API response:",
+                "Raw transaction response:",
                 response.text
             )
 
@@ -453,135 +457,319 @@ async def tx(
 
         data = response.json()
 
-        if not data:
+        if "error" in data:
+
+            print(
+                "Helius transaction error:",
+                data["error"]
+            )
 
             await update.message.reply_text(
-                "❌ Transaction was not found "
-                "or could not be parsed."
+                "❌ Helius returned an error while "
+                "reading the transaction."
             )
 
             return
 
-        transaction = data[0]
+        transaction = data.get("result")
 
-        tx_type = transaction.get(
-            "type",
-            "UNKNOWN"
+        if not transaction:
+
+            await update.message.reply_text(
+                "❌ Transaction not found."
+            )
+
+            return
+
+        meta = transaction.get(
+            "meta"
         )
 
-        description = transaction.get(
-            "description",
-            "No description available."
-        )
+        if not meta:
 
-        timestamp = transaction.get(
-            "timestamp",
+            await update.message.reply_text(
+                "⚠️ Transaction found, but no "
+                "metadata was returned."
+            )
+
+            return
+
+        block_time = transaction.get(
+            "blockTime",
             "Unknown"
         )
 
-        fee = transaction.get(
+        slot = transaction.get(
+            "slot",
+            "Unknown"
+        )
+
+        fee = meta.get(
             "fee",
             0
         )
 
-        native_transfers = transaction.get(
-            "nativeTransfers",
+        err = meta.get(
+            "err"
+        )
+
+        status = (
+            "✅ SUCCESS"
+            if err is None
+            else "❌ FAILED"
+        )
+
+        pre_balances = meta.get(
+            "preBalances",
             []
         )
 
-        token_transfers = transaction.get(
-            "tokenTransfers",
+        post_balances = meta.get(
+            "postBalances",
             []
+        )
+
+        account_keys = (
+            transaction
+            .get("transaction", {})
+            .get("message", {})
+            .get("accountKeys", [])
         )
 
         message = (
-            "🔍 Transaction Analysis\n\n"
-            f"🧩 Type: {tx_type}\n"
-            f"📝 Description: {description}\n"
-            f"⏱️ Timestamp: {timestamp}\n"
+            "🔍 Raw Transaction Analysis\n\n"
+            f"📊 Status: {status}\n"
+            f"🧱 Slot: {slot}\n"
+            f"⏱️ Block time: {block_time}\n"
             f"💸 Fee: {fee} lamports\n\n"
         )
 
-        if native_transfers:
+        sol_changes = []
 
-            message += (
-                "💰 SOL Transfers:\n"
+        count = min(
+            len(pre_balances),
+            len(post_balances),
+            len(account_keys)
+        )
+
+        for i in range(count):
+
+            before = pre_balances[i]
+            after = post_balances[i]
+
+            change = after - before
+
+            if change == 0:
+                continue
+
+            account = account_keys[i]
+
+            if isinstance(account, dict):
+
+                address = account.get(
+                    "pubkey",
+                    "Unknown"
+                )
+
+            else:
+
+                address = str(account)
+
+            sol_change = (
+                change / 1_000_000_000
             )
 
-            for transfer in native_transfers[:5]:
-
-                sender = transfer.get(
-                    "fromUserAccount",
-                    "Unknown"
+            sol_changes.append(
+                (
+                    address,
+                    sol_change
                 )
+            )
 
-                receiver = transfer.get(
-                    "toUserAccount",
-                    "Unknown"
-                )
+        if sol_changes:
 
-                amount = transfer.get(
-                    "amount",
-                    0
-                )
+            message += "💰 SOL Balance Changes:\n\n"
 
-                sol_amount = (
-                    amount / 1_000_000_000
+            for address, change in sol_changes[:8]:
+
+                direction = (
+                    "📈 +"
+                    if change > 0
+                    else "📉 "
                 )
 
                 message += (
-                    f"• {sol_amount:.6f} SOL\n"
-                    f"  From: `{sender}`\n"
-                    f"  To: `{receiver}`\n\n"
+                    f"{direction}{change:.6f} SOL\n"
+                    f"👤 `{address}`\n\n"
                 )
 
-        if token_transfers:
+        else:
 
             message += (
-                "🪙 Token Transfers:\n"
+                "💰 SOL Balance Changes:\n"
+                "None detected\n\n"
             )
 
-            for transfer in token_transfers[:5]:
+        pre_token_balances = meta.get(
+            "preTokenBalances",
+            []
+        )
 
-                mint = transfer.get(
-                    "mint",
-                    "Unknown"
+        post_token_balances = meta.get(
+            "postTokenBalances",
+            []
+        )
+
+        token_before = {}
+
+        for balance in pre_token_balances:
+
+            account_index = balance.get(
+                "accountIndex"
+            )
+
+            mint = balance.get(
+                "mint",
+                "Unknown"
+            )
+
+            ui_amount = (
+                balance
+                .get("uiTokenAmount", {})
+                .get("uiAmount")
+            )
+
+            if ui_amount is None:
+
+                raw_amount = (
+                    balance
+                    .get("uiTokenAmount", {})
+                    .get("amount", "0")
                 )
 
-                from_account = transfer.get(
-                    "fromUserAccount",
-                    "Unknown"
+                decimals = (
+                    balance
+                    .get("uiTokenAmount", {})
+                    .get("decimals", 0)
                 )
 
-                to_account = transfer.get(
-                    "toUserAccount",
-                    "Unknown"
-                )
+                try:
 
-                token_amount = transfer.get(
-                    "tokenAmount",
-                    transfer.get(
-                        "rawTokenAmount",
-                        "Unknown"
+                    ui_amount = (
+                        int(raw_amount)
+                        / (10 ** decimals)
                     )
+
+                except Exception:
+
+                    ui_amount = 0
+
+            token_before[
+                (account_index, mint)
+            ] = ui_amount
+
+        token_changes = []
+
+        for balance in post_token_balances:
+
+            account_index = balance.get(
+                "accountIndex"
+            )
+
+            mint = balance.get(
+                "mint",
+                "Unknown"
+            )
+
+            ui_amount = (
+                balance
+                .get("uiTokenAmount", {})
+                .get("uiAmount")
+            )
+
+            if ui_amount is None:
+
+                raw_amount = (
+                    balance
+                    .get("uiTokenAmount", {})
+                    .get("amount", "0")
+                )
+
+                decimals = (
+                    balance
+                    .get("uiTokenAmount", {})
+                    .get("decimals", 0)
+                )
+
+                try:
+
+                    ui_amount = (
+                        int(raw_amount)
+                        / (10 ** decimals)
+                    )
+
+                except Exception:
+
+                    ui_amount = 0
+
+            before_amount = token_before.get(
+                (account_index, mint),
+                0
+            )
+
+            change = ui_amount - before_amount
+
+            if change == 0:
+                continue
+
+            owner = balance.get(
+                "owner",
+                "Unknown"
+            )
+
+            token_changes.append(
+                (
+                    mint,
+                    owner,
+                    change
+                )
+            )
+
+        if token_changes:
+
+            message += "🪙 Token Balance Changes:\n\n"
+
+            for mint, owner, change in token_changes[:8]:
+
+                direction = (
+                    "📥 +"
+                    if change > 0
+                    else "📤 "
                 )
 
                 message += (
-                    f"• Amount: {token_amount}\n"
-                    f"  Mint: `{mint}`\n"
-                    f"  From: `{from_account}`\n"
-                    f"  To: `{to_account}`\n\n"
+                    f"{direction}{change:,.6f} tokens\n"
+                    f"🪙 Mint: `{mint}`\n"
+                    f"👤 Owner: `{owner}`\n\n"
                 )
+
+        else:
+
+            message += (
+                "🪙 Token Balance Changes:\n"
+                "None detected\n\n"
+            )
 
         message += (
-            f"🔗 Signature:\n"
+            "🔗 Signature:\n"
             f"`{signature}`"
         )
 
         if len(message) > 4000:
 
-            message = message[:3950] + (
-                "\n\n⚠️ Message shortened."
+            message = (
+                message[:3900]
+                + "\n\n⚠️ Output shortened."
             )
 
         await update.message.reply_text(
@@ -598,12 +786,13 @@ async def tx(
     except Exception as error:
 
         print(
-            f"Transaction analysis error: {error}"
+            f"Raw transaction analysis error: "
+            f"{error}"
         )
 
         await update.message.reply_text(
             "❌ Something went wrong while "
-            "analyzing the transaction."
+            "reading the raw transaction."
         )
 
 
@@ -650,59 +839,35 @@ def main():
     )
 
     bot.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
+        CommandHandler("start", start)
     )
 
     bot.add_handler(
-        CommandHandler(
-            "ping",
-            ping
-        )
+        CommandHandler("ping", ping)
     )
 
     bot.add_handler(
-        CommandHandler(
-            "status",
-            status
-        )
+        CommandHandler("status", status)
     )
 
     bot.add_handler(
-        CommandHandler(
-            "watch",
-            watch
-        )
+        CommandHandler("watch", watch)
     )
 
     bot.add_handler(
-        CommandHandler(
-            "info",
-            info
-        )
+        CommandHandler("info", info)
     )
 
     bot.add_handler(
-        CommandHandler(
-            "list",
-            list_tokens
-        )
+        CommandHandler("list", list_tokens)
     )
 
     bot.add_handler(
-        CommandHandler(
-            "activity",
-            activity
-        )
+        CommandHandler("activity", activity)
     )
 
     bot.add_handler(
-        CommandHandler(
-            "tx",
-            tx
-        )
+        CommandHandler("tx", tx)
     )
 
     print(
