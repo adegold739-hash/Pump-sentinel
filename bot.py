@@ -29,8 +29,6 @@ HELIUS_URL = (
     f"?api-key={HELIUS_API_KEY}"
 )
 
-SOL_MINT = "So11111111111111111111111111111111111111112"
-
 app = Flask(__name__)
 
 
@@ -76,7 +74,7 @@ def format_sol(amount):
     if amount is None:
         return "0 SOL"
 
-    return f"{amount:,.9f} SOL"
+    return f"{amount:+,.9f} SOL"
 
 
 def helius_rpc(method, params):
@@ -393,12 +391,12 @@ def get_fee_payer(transaction):
         [],
     )
 
+    if not account_keys:
+        return None
+
     for key in account_keys:
         if isinstance(key, dict) and key.get("signer"):
             return key.get("pubkey")
-
-    if not account_keys:
-        return None
 
     first = account_keys[0]
 
@@ -423,6 +421,13 @@ def get_account_keys(transaction):
     )
 
 
+def get_pubkey(account_key):
+    if isinstance(account_key, dict):
+        return account_key.get("pubkey")
+
+    return account_key
+
+
 def get_token_balance_changes(transaction):
     meta = transaction.get("meta") or {}
 
@@ -440,15 +445,11 @@ def get_token_balance_changes(transaction):
     post_map = {}
 
     for balance in pre_balances:
-        account_index = balance.get(
-            "accountIndex",
-        )
+        account_index = balance.get("accountIndex")
         pre_map[account_index] = balance
 
     for balance in post_balances:
-        account_index = balance.get(
-            "accountIndex",
-        )
+        account_index = balance.get("accountIndex")
         post_map[account_index] = balance
 
     all_indexes = set(pre_map) | set(post_map)
@@ -456,37 +457,51 @@ def get_token_balance_changes(transaction):
     changes = []
 
     for account_index in all_indexes:
-        pre = pre_map.get(
-            account_index,
-            {},
-        )
+        pre = pre_map.get(account_index, {})
+        post = post_map.get(account_index, {})
 
-        post = post_map.get(
-            account_index,
-            {},
-        )
-
-        mint = (
-            post.get("mint")
-            or pre.get("mint")
-        )
+        mint = post.get("mint") or pre.get("mint")
 
         owner = (
             post.get("owner")
             or pre.get("owner")
         )
 
-        pre_amount = (
-            pre.get("uiTokenAmount", {})
-            .get("uiAmount")
-            or 0
+        pre_info = pre.get(
+            "uiTokenAmount",
+            {},
         )
 
-        post_amount = (
-            post.get("uiTokenAmount", {})
-            .get("uiAmount")
-            or 0
+        post_info = post.get(
+            "uiTokenAmount",
+            {},
         )
+
+        pre_amount = pre_info.get(
+            "uiAmountString"
+        )
+
+        post_amount = post_info.get(
+            "uiAmountString"
+        )
+
+        try:
+            pre_amount = (
+                float(pre_amount)
+                if pre_amount is not None
+                else 0
+            )
+        except (TypeError, ValueError):
+            pre_amount = 0
+
+        try:
+            post_amount = (
+                float(post_amount)
+                if post_amount is not None
+                else 0
+            )
+        except (TypeError, ValueError):
+            post_amount = 0
 
         net_change = post_amount - pre_amount
 
@@ -578,7 +593,9 @@ def collect_transfers(transaction):
     transfers = []
 
     for instruction in collect_instructions(transaction):
-        parsed = extract_parsed_instruction(instruction)
+        parsed = extract_parsed_instruction(
+            instruction
+        )
 
         if not parsed:
             continue
@@ -611,19 +628,19 @@ def collect_transfers(transaction):
 
         source = info.get("source")
         destination = info.get("destination")
+
         authority = (
             info.get("authority")
             or info.get("owner")
         )
 
         token_amount = info.get("amount")
+
         token_amount_info = info.get(
             "tokenAmount",
             {},
         )
 
-        # Prefer Helius/Solana's UI amount when available.
-        # This prevents incorrect decimal conversion.
         ui_amount = token_amount_info.get(
             "uiAmount"
         )
@@ -632,9 +649,7 @@ def collect_transfers(transaction):
             "uiAmountString"
         )
 
-        decimals = info.get(
-            "decimals"
-        )
+        decimals = info.get("decimals")
 
         if decimals is None:
             decimals = token_amount_info.get(
@@ -643,19 +658,22 @@ def collect_transfers(transaction):
 
         if ui_amount is not None:
             display_amount = ui_amount
+
         elif ui_amount_string is not None:
             display_amount = ui_amount_string
+
         elif token_amount is not None and decimals is not None:
             try:
                 display_amount = (
-                    int(token_amount) /
-                    (10 ** int(decimals))
+                    int(token_amount)
+                    / (10 ** int(decimals))
                 )
             except (
                 TypeError,
                 ValueError,
             ):
                 display_amount = token_amount
+
         else:
             display_amount = token_amount
 
@@ -673,66 +691,225 @@ def collect_transfers(transaction):
 
 
 # =========================================================
-# TRANSACTION INTELLIGENCE
+# BUY / SELL CLASSIFIER
 # =========================================================
 
-def analyze_transaction(signature):
-    transaction = helius_rpc(
-        "getTransaction",
-        [
-            signature,
-            {
-                "encoding": "jsonParsed",
-                "commitment": "confirmed",
-                "maxSupportedTransactionVersion": 0
-            }
-        ]
+def classify_transaction(
+    token_changes,
+    sol_changes,
+    fee_payer,
+):
+    """
+    Basic transaction classification.
+
+    BUY:
+    The fee payer receives tokens and spends SOL.
+
+    SELL:
+    The fee payer loses tokens and receives SOL.
+
+    TRANSFER:
+    Token movement without meaningful SOL movement.
+
+    UNKNOWN:
+    Pattern cannot be confidently classified.
+    """
+
+    if not token_changes:
+        return "UNKNOWN", None, 0, None
+
+    # Calculate token changes by wallet owner.
+    owner_changes = {}
+
+    for change in token_changes:
+        owner = change.get("owner")
+        net = change.get("net", 0)
+
+        if not owner:
+            continue
+
+        owner_changes[owner] = (
+            owner_changes.get(owner, 0)
+            + net
+        )
+
+    if not owner_changes:
+        return "UNKNOWN", None, 0, None
+
+    # Prefer the fee payer if they are one
+    # of the token owners.
+    trader = None
+
+    if fee_payer in owner_changes:
+        trader = fee_payer
+    else:
+        trader = max(
+            owner_changes,
+            key=lambda owner: abs(
+                owner_changes[owner]
+            ),
+        )
+
+    token_delta = owner_changes.get(
+        trader,
+        0,
     )
 
-    if not transaction:
-        return None
+    # Find the fee payer's SOL movement.
+    sol_delta = 0
 
-    meta = transaction.get("meta", {})
-    message = transaction.get("transaction", {}).get("message", {})
+    account_index = None
 
-    fee_payer = get_fee_payer(message)
-    account_keys = get_account_keys(message)
+    # In Solana transactions the fee payer is
+    # normally account index 0.
+    for change in sol_changes:
+        if change.get("account_index") == 0:
+            account_index = 0
+            sol_delta = change.get(
+                "net_sol",
+                0,
+            )
+            break
 
-    token_changes = get_token_balance_changes(meta, account_keys)
-    sol_changes = get_sol_balance_changes(meta, account_keys)
+    # Ignore tiny fee-only changes.
+    meaningful_sol = abs(sol_delta) > 0.00001
 
-    instructions = collect_instructions(message)
+    if token_delta > 0 and sol_delta < -0.00001:
+        return (
+            "BUY",
+            trader,
+            token_delta,
+            sol_delta,
+        )
 
-    transfers = collect_transfers(meta, message)
+    if token_delta < 0 and sol_delta > 0.00001:
+        return (
+            "SELL",
+            trader,
+            token_delta,
+            sol_delta,
+        )
 
-    classification, trader, token_delta = classify_transaction(
-        token_changes,
-        sol_changes,
-        fee_payer
+    if token_delta != 0 and not meaningful_sol:
+        return (
+            "TRANSFER",
+            trader,
+            token_delta,
+            sol_delta,
+        )
+
+    return (
+        "UNKNOWN",
+        trader,
+        token_delta,
+        sol_delta,
     )
+
+
+# =========================================================
+# TRANSACTION ANALYSIS
+# =========================================================
+
+def analyze_transaction(transaction, signature):
+    meta = transaction.get("meta") or {}
+
+    message = (
+        transaction.get(
+            "transaction",
+            {},
+        ).get(
+            "message",
+            {},
+        )
+    )
+
+    fee_payer = get_fee_payer(transaction)
+
+    account_keys = get_account_keys(
+        transaction
+    )
+
+    token_changes = get_token_balance_changes(
+        transaction
+    )
+
+    sol_changes = get_sol_balance_changes(
+        transaction
+    )
+
+    transfers = collect_transfers(
+        transaction
+    )
+
+    instructions = collect_instructions(
+        transaction
+    )
+
+    classification, trader, token_delta, sol_delta = (
+        classify_transaction(
+            token_changes,
+            sol_changes,
+            fee_payer,
+        )
+    )
+
+    fee_lamports = meta.get(
+        "fee",
+        0,
+    )
+
+    fee_sol = fee_lamports / 1_000_000_000
 
     return {
         "signature": signature,
-        "transaction": transaction,
+        "status": (
+            "FAILED"
+            if meta.get("err")
+            else "SUCCESS"
+        ),
+        "fee_lamports": fee_lamports,
+        "fee_sol": fee_sol,
         "fee_payer": fee_payer,
+        "account_keys": account_keys,
         "token_changes": token_changes,
         "sol_changes": sol_changes,
-        "instructions": instructions,
         "transfers": transfers,
+        "instructions": instructions,
         "classification": classification,
         "trader": trader,
-        "token_delta": token_delta
+        "token_delta": token_delta,
+        "sol_delta": sol_delta,
     }
-    
 
+
+# =========================================================
+# TRANSACTION REPORT
+# =========================================================
 
 def format_transaction_report(
     signature,
     transaction,
 ):
     analysis = analyze_transaction(
-        transaction
+        transaction,
+        signature,
     )
+
+    classification = analysis[
+        "classification"
+    ]
+
+    if classification == "BUY":
+        classification_text = "🟢 BUY"
+
+    elif classification == "SELL":
+        classification_text = "🔴 SELL"
+
+    elif classification == "TRANSFER":
+        classification_text = "🔵 TRANSFER"
+
+    else:
+        classification_text = "⚪ UNKNOWN"
 
     lines = [
         "🔬 Transaction Intelligence",
@@ -741,14 +918,46 @@ def format_transaction_report(
         f"💸 Fee: {analysis['fee_lamports']:,} lamports "
         f"({analysis['fee_sol']:.9f} SOL)",
         "",
-        "👤 Fee payer:",
-        shorten_address(
-            analysis["fee_payer"],
-            10,
-        ),
+        f"🧠 Classification: {classification_text}",
     ]
 
-    transfers = analysis["transfers"]
+    trader = analysis.get("trader")
+
+    if trader:
+        lines.extend([
+            "",
+            "👤 Trader:",
+            shorten_address(
+                trader,
+                10,
+            ),
+        ])
+
+    token_delta = analysis.get(
+        "token_delta",
+        0,
+    )
+
+    if token_delta != 0:
+        lines.extend([
+            "",
+            f"🪙 Token Change: {token_delta:+,.12f}",
+        ])
+
+    sol_delta = analysis.get(
+        "sol_delta",
+        0,
+    )
+
+    if sol_delta != 0:
+        lines.append(
+            f"◎ Trader SOL Change: "
+            f"{format_sol(sol_delta)}"
+        )
+
+    transfers = analysis[
+        "transfers"
+    ]
 
     if transfers:
         lines.extend([
@@ -832,6 +1041,7 @@ async def tx_command(
             signature,
             {
                 "encoding": "jsonParsed",
+                "commitment": "confirmed",
                 "maxSupportedTransactionVersion": 0,
             },
         ],
@@ -949,6 +1159,7 @@ def main():
     application = create_application()
 
     print("Telegram bot starting...")
+
     print(
         f"Helius: "
         f"{'CONNECTED' if HELIUS_API_KEY else 'MISSING'}"
