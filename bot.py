@@ -7,7 +7,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 from database import init_database, add_token, get_tokens
 from solana import get_token_info
-
+from whales import get_top_holders
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 
