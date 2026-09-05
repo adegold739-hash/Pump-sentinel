@@ -495,7 +495,6 @@ def get_token_balance_changes(transaction):
             "after": post_amount,
             "net": net_change,
         })
-
     return changes
 
 
@@ -647,4 +646,4 @@ def collect_transfers(transaction):
                 "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
                 "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnB4jM8y7D4c7c"
             ]
-       
+        )
