@@ -759,7 +759,7 @@ def classify_transaction(token_changes, sol_changes, fee_payer):
         return "TRANSFER", token_owner, token_delta
 
     return "UNKNOWN", token_owner, token_delta
-    }
+    
 
 
 def format_transaction_report(
