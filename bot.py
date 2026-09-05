@@ -52,9 +52,11 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not HELIUS_API_KEY:
+
         await update.message.reply_text(
             "🔴 Helius API key is missing."
         )
+
         return
 
     try:
@@ -229,9 +231,14 @@ async def list_tokens(
 
     message = "👀 Watched tokens:\n\n"
 
-    for number, token in enumerate(tokens, start=1):
+    for number, token in enumerate(
+        tokens,
+        start=1
+    ):
 
-        message += f"{number}. `{token}`\n"
+        message += (
+            f"{number}. `{token}`\n"
+        )
 
     await update.message.reply_text(
         message,
@@ -388,6 +395,21 @@ async def activity(
         )
 
 
+def shorten_address(address):
+
+    if not address:
+        return "Unknown"
+
+    if len(address) <= 12:
+        return address
+
+    return (
+        address[:6]
+        + "..."
+        + address[-6:]
+    )
+
+
 async def tx(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -414,7 +436,7 @@ async def tx(
         return
 
     await update.message.reply_text(
-        "🔍 Reading raw Solana transaction..."
+        "🔍 Inspecting transaction instructions..."
     )
 
     try:
@@ -428,7 +450,7 @@ async def tx(
             url,
             json={
                 "jsonrpc": "2.0",
-                "id": "pump-sentinel-tx",
+                "id": "pump-sentinel-instructions",
                 "method": "getTransaction",
                 "params": [
                     signature,
@@ -445,7 +467,7 @@ async def tx(
         if not response.ok:
 
             print(
-                "Raw transaction response:",
+                "Transaction response:",
                 response.text
             )
 
@@ -465,8 +487,7 @@ async def tx(
             )
 
             await update.message.reply_text(
-                "❌ Helius returned an error while "
-                "reading the transaction."
+                "❌ Helius returned an error."
             )
 
             return
@@ -485,11 +506,17 @@ async def tx(
             "meta"
         )
 
+        message_data = (
+            transaction
+            .get("transaction", {})
+            .get("message", {})
+        )
+
         if not meta:
 
             await update.message.reply_text(
-                "⚠️ Transaction found, but no "
-                "metadata was returned."
+                "⚠️ Transaction found, but "
+                "metadata is unavailable."
             )
 
             return
@@ -519,245 +546,248 @@ async def tx(
             else "❌ FAILED"
         )
 
-        pre_balances = meta.get(
-            "preBalances",
+        account_keys = message_data.get(
+            "accountKeys",
             []
         )
 
-        post_balances = meta.get(
-            "postBalances",
+        instructions = message_data.get(
+            "instructions",
             []
         )
 
-        account_keys = (
-            transaction
-            .get("transaction", {})
-            .get("message", {})
-            .get("accountKeys", [])
+        inner_instructions = meta.get(
+            "innerInstructions",
+            []
         )
 
         message = (
-            "🔍 Raw Transaction Analysis\n\n"
+            "🔬 Transaction Inspection\n\n"
             f"📊 Status: {status}\n"
             f"🧱 Slot: {slot}\n"
             f"⏱️ Block time: {block_time}\n"
             f"💸 Fee: {fee} lamports\n\n"
         )
 
-        sol_changes = []
-
-        count = min(
-            len(pre_balances),
-            len(post_balances),
-            len(account_keys)
+        message += (
+            f"👥 Accounts involved: "
+            f"{len(account_keys)}\n"
+            f"🧩 Instructions: "
+            f"{len(instructions)}\n"
+            f"🔁 Inner instruction groups: "
+            f"{len(inner_instructions)}\n\n"
         )
 
-        for i in range(count):
+        program_ids = []
 
-            before = pre_balances[i]
-            after = post_balances[i]
+        for instruction in instructions:
 
-            change = after - before
+            program_id = instruction.get(
+                "programId"
+            )
 
-            if change == 0:
-                continue
+            if program_id:
 
-            account = account_keys[i]
-
-            if isinstance(account, dict):
-
-                address = account.get(
-                    "pubkey",
-                    "Unknown"
+                program_ids.append(
+                    program_id
                 )
 
             else:
 
-                address = str(account)
+                parsed = instruction.get(
+                    "parsed"
+                )
 
-            sol_change = (
-                change / 1_000_000_000
+                if isinstance(parsed, dict):
+
+                    program = instruction.get(
+                        "program"
+                    )
+
+                    if program:
+                        program_ids.append(
+                            f"{program} (parsed)"
+                        )
+
+        unique_programs = []
+
+        for program in program_ids:
+
+            if program not in unique_programs:
+
+                unique_programs.append(
+                    program
+                )
+
+        if unique_programs:
+
+            message += (
+                "🏗️ Programs called:\n\n"
             )
 
-            sol_changes.append(
-                (
-                    address,
-                    sol_change
-                )
-            )
-
-        if sol_changes:
-
-            message += "💰 SOL Balance Changes:\n\n"
-
-            for address, change in sol_changes[:8]:
-
-                direction = (
-                    "📈 +"
-                    if change > 0
-                    else "📉 "
-                )
+            for program in unique_programs[:10]:
 
                 message += (
-                    f"{direction}{change:.6f} SOL\n"
-                    f"👤 `{address}`\n\n"
+                    f"• `{program}`\n"
                 )
+
+            message += "\n"
 
         else:
 
             message += (
-                "💰 SOL Balance Changes:\n"
-                "None detected\n\n"
+                "🏗️ Programs called:\n"
+                "None identified\n\n"
             )
 
-        pre_token_balances = meta.get(
-            "preTokenBalances",
-            []
-        )
+        if instructions:
 
-        post_token_balances = meta.get(
-            "postTokenBalances",
-            []
-        )
-
-        token_before = {}
-
-        for balance in pre_token_balances:
-
-            account_index = balance.get(
-                "accountIndex"
+            message += (
+                "🧩 Outer Instructions:\n\n"
             )
 
-            mint = balance.get(
-                "mint",
-                "Unknown"
-            )
+            for number, instruction in enumerate(
+                instructions[:10],
+                start=1
+            ):
 
-            ui_amount = (
-                balance
-                .get("uiTokenAmount", {})
-                .get("uiAmount")
-            )
-
-            if ui_amount is None:
-
-                raw_amount = (
-                    balance
-                    .get("uiTokenAmount", {})
-                    .get("amount", "0")
+                program = instruction.get(
+                    "program"
                 )
 
-                decimals = (
-                    balance
-                    .get("uiTokenAmount", {})
-                    .get("decimals", 0)
+                program_id = instruction.get(
+                    "programId"
                 )
 
-                try:
+                parsed = instruction.get(
+                    "parsed"
+                )
 
-                    ui_amount = (
-                        int(raw_amount)
-                        / (10 ** decimals)
+                if program:
+
+                    label = program
+
+                elif program_id:
+
+                    label = shorten_address(
+                        program_id
                     )
 
-                except Exception:
+                else:
 
-                    ui_amount = 0
+                    label = "Unknown"
 
-            token_before[
-                (account_index, mint)
-            ] = ui_amount
+                parsed_type = ""
 
-        token_changes = []
+                if isinstance(parsed, dict):
 
-        for balance in post_token_balances:
-
-            account_index = balance.get(
-                "accountIndex"
-            )
-
-            mint = balance.get(
-                "mint",
-                "Unknown"
-            )
-
-            ui_amount = (
-                balance
-                .get("uiTokenAmount", {})
-                .get("uiAmount")
-            )
-
-            if ui_amount is None:
-
-                raw_amount = (
-                    balance
-                    .get("uiTokenAmount", {})
-                    .get("amount", "0")
-                )
-
-                decimals = (
-                    balance
-                    .get("uiTokenAmount", {})
-                    .get("decimals", 0)
-                )
-
-                try:
-
-                    ui_amount = (
-                        int(raw_amount)
-                        / (10 ** decimals)
+                    parsed_type = parsed.get(
+                        "type",
+                        ""
                     )
 
-                except Exception:
+                if parsed_type:
 
-                    ui_amount = 0
+                    message += (
+                        f"{number}. {label}\n"
+                        f"   Type: {parsed_type}\n"
+                    )
 
-            before_amount = token_before.get(
-                (account_index, mint),
-                0
+                else:
+
+                    message += (
+                        f"{number}. {label}\n"
+                    )
+
+            message += "\n"
+
+        if inner_instructions:
+
+            message += (
+                "🔁 Inner Instructions:\n\n"
             )
 
-            change = ui_amount - before_amount
+            inner_count = 0
 
-            if change == 0:
-                continue
+            for group in inner_instructions:
 
-            owner = balance.get(
-                "owner",
-                "Unknown"
-            )
-
-            token_changes.append(
-                (
-                    mint,
-                    owner,
-                    change
-                )
-            )
-
-        if token_changes:
-
-            message += "🪙 Token Balance Changes:\n\n"
-
-            for mint, owner, change in token_changes[:8]:
-
-                direction = (
-                    "📥 +"
-                    if change > 0
-                    else "📤 "
+                group_index = group.get(
+                    "index",
+                    "?"
                 )
 
-                message += (
-                    f"{direction}{change:,.6f} tokens\n"
-                    f"🪙 Mint: `{mint}`\n"
-                    f"👤 Owner: `{owner}`\n\n"
+                inner_list = group.get(
+                    "instructions",
+                    []
                 )
+
+                for instruction in inner_list[:5]:
+
+                    if inner_count >= 12:
+                        break
+
+                    program = instruction.get(
+                        "program"
+                    )
+
+                    program_id = instruction.get(
+                        "programId"
+                    )
+
+                    parsed = instruction.get(
+                        "parsed"
+                    )
+
+                    if program:
+
+                        label = program
+
+                    elif program_id:
+
+                        label = shorten_address(
+                            program_id
+                        )
+
+                    else:
+
+                        label = "Unknown"
+
+                    parsed_type = ""
+
+                    if isinstance(parsed, dict):
+
+                        parsed_type = parsed.get(
+                            "type",
+                            ""
+                        )
+
+                    if parsed_type:
+
+                        message += (
+                            f"• Group {group_index}: "
+                            f"{label}\n"
+                            f"  Type: {parsed_type}\n"
+                        )
+
+                    else:
+
+                        message += (
+                            f"• Group {group_index}: "
+                            f"{label}\n"
+                        )
+
+                    inner_count += 1
+
+                if inner_count >= 12:
+                    break
+
+            message += "\n"
 
         else:
 
             message += (
-                "🪙 Token Balance Changes:\n"
-                "None detected\n\n"
+                "🔁 Inner Instructions:\n"
+                "None found\n\n"
             )
 
         message += (
@@ -786,13 +816,13 @@ async def tx(
     except Exception as error:
 
         print(
-            f"Raw transaction analysis error: "
-            f"{error}"
+            "Instruction analysis error:",
+            error
         )
 
         await update.message.reply_text(
             "❌ Something went wrong while "
-            "reading the raw transaction."
+            "inspecting the transaction."
         )
 
 
@@ -839,35 +869,59 @@ def main():
     )
 
     bot.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start
+        )
     )
 
     bot.add_handler(
-        CommandHandler("ping", ping)
+        CommandHandler(
+            "ping",
+            ping
+        )
     )
 
     bot.add_handler(
-        CommandHandler("status", status)
+        CommandHandler(
+            "status",
+            status
+        )
     )
 
     bot.add_handler(
-        CommandHandler("watch", watch)
+        CommandHandler(
+            "watch",
+            watch
+        )
     )
 
     bot.add_handler(
-        CommandHandler("info", info)
+        CommandHandler(
+            "info",
+            info
+        )
     )
 
     bot.add_handler(
-        CommandHandler("list", list_tokens)
+        CommandHandler(
+            "list",
+            list_tokens
+        )
     )
 
     bot.add_handler(
-        CommandHandler("activity", activity)
+        CommandHandler(
+            "activity",
+            activity
+        )
     )
 
     bot.add_handler(
-        CommandHandler("tx", tx)
+        CommandHandler(
+            "tx",
+            tx
+        )
     )
 
     print(
