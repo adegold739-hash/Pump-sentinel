@@ -32,6 +32,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🛡️ Pump Sentinel\n\n"
         "Commands:\n"
         "/watch TOKEN_ADDRESS - Watch a token\n"
+        "/info TOKEN_ADDRESS - Get token information\n"
         "/list - Show watched tokens\n"
         "/status - Check connections\n"
         "/ping - Test the bot"
@@ -136,6 +137,58 @@ async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Give me a Solana token address.\n\n"
+            "Example:\n"
+            "/info TOKEN_ADDRESS"
+        )
+        return
+
+    token_address = context.args[0].strip()
+
+    if len(token_address) < 32:
+        await update.message.reply_text(
+            "❌ That doesn't look like a valid Solana address."
+        )
+        return
+
+    await update.message.reply_text(
+        "🔎 Fetching token information..."
+    )
+
+    token_info, error = get_token_info(token_address)
+
+    if error:
+        await update.message.reply_text(
+            f"❌ {error}"
+        )
+        return
+
+    name = token_info["name"]
+    symbol = token_info["symbol"]
+    supply = token_info["supply"]
+    decimals = token_info["decimals"]
+
+    watched_tokens = get_tokens()
+    watching = token_address in watched_tokens
+
+    watching_status = "👀 YES" if watching else "❌ NO"
+
+    await update.message.reply_text(
+        f"🪙 {name}\n"
+        f"🔤 Symbol: {symbol}\n\n"
+        f"📍 Address:\n"
+        f"`{token_address}`\n\n"
+        f"💰 Supply: {supply}\n"
+        f"🔢 Decimals: {decimals}\n"
+        f"👀 Watching: {watching_status}",
+        parse_mode="Markdown"
+    )
+
+
 async def list_tokens(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -209,6 +262,10 @@ def main():
 
     bot.add_handler(
         CommandHandler("watch", watch)
+    )
+
+    bot.add_handler(
+        CommandHandler("info", info)
     )
 
     bot.add_handler(
