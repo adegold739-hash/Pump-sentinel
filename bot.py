@@ -33,7 +33,44 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/status - Check connections\n"
         "/ping - Test the bot"
     )
+async def whales(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        tokens = get_tokens()
 
+        if not tokens:
+            await update.message.reply_text(
+                "📭 You're not watching any tokens yet."
+            )
+            return
+
+        token_address = tokens[-1]
+    else:
+        token_address = context.args[0].strip()
+
+    await update.message.reply_text(
+        "🐋 Finding the biggest holders..."
+    )
+
+    holders, error = get_top_holders(token_address)
+
+    if error:
+        await update.message.reply_text(
+            f"❌ {error}"
+        )
+        return
+
+    message = "🐋 TOP HOLDERS\n\n"
+
+    for number, (wallet, amount) in enumerate(holders, start=1):
+        message += (
+            f"{number}. `{wallet}`\n"
+            f"   Tokens: {amount:,}\n\n"
+        )
+
+    await update.message.reply_text(
+        message,
+        parse_mode="Markdown"
+        )
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
