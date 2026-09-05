@@ -13,7 +13,6 @@ from solana import get_token_info
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 
-
 app = Flask(__name__)
 
 
@@ -33,6 +32,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Commands:\n"
         "/watch TOKEN_ADDRESS - Watch a token\n"
         "/info TOKEN_ADDRESS - Get token information\n"
+        "/activity TOKEN_ADDRESS - Recent activity\n"
         "/list - Show watched tokens\n"
         "/status - Check connections\n"
         "/ping - Test the bot"
@@ -184,6 +184,120 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not HELIUS_API_KEY:
+        await update.message.reply_text(
+            "🔴 Helius API key is missing."
+        )
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Give me a Solana token address.\n\n"
+            "Example:\n"
+            "/activity TOKEN_ADDRESS"
+        )
+        return
+
+    token_address = context.args[0].strip()
+
+    if len(token_address) < 32:
+        await update.message.reply_text(
+            "❌ That doesn't look like a valid Solana address."
+        )
+        return
+
+    await update.message.reply_text(
+        "📡 Checking recent activity..."
+    )
+
+    url = (
+        "https://mainnet.helius-rpc.com/"
+        f"?api-key={HELIUS_API_KEY}"
+    )
+
+    try:
+        response = requests.post(
+            url,
+            json={
+                "jsonrpc": "2.0",
+                "id": "pump-sentinel",
+                "method": "getSignaturesForAddress",
+                "params": [
+                    token_address,
+                    {
+                        "limit": 10
+                    }
+                ]
+            },
+            timeout=15
+        )
+
+        if not response.ok:
+            await update.message.reply_text(
+                "❌ Helius request failed."
+            )
+            return
+
+        data = response.json()
+
+        if "error" in data:
+            await update.message.reply_text(
+                "❌ Helius returned an error."
+            )
+            return
+
+        transactions = data.get("result", [])
+
+        if not transactions:
+            await update.message.reply_text(
+                "📭 No recent transactions found."
+            )
+            return
+
+        message = (
+            "📡 Recent Activity\n\n"
+            f"📍 `{token_address}`\n"
+            f"🔎 Transactions found: {len(transactions)}\n\n"
+        )
+
+        for number, tx in enumerate(transactions, start=1):
+
+            signature = tx.get("signature", "Unknown")
+            block_time = tx.get("blockTime")
+
+            if block_time:
+                time_text = str(block_time)
+            else:
+                time_text = "Unknown"
+
+            status = (
+                "❌ Failed"
+                if tx.get("err")
+                else "✅ Success"
+            )
+
+            message += (
+                f"{number}. {status}\n"
+                f"⏱️ {time_text}\n"
+                f"🔗 `{signature}`\n\n"
+            )
+
+        if len(message) > 4000:
+            message = message[:3950] + "\n..."
+
+        await update.message.reply_text(
+            message,
+            parse_mode="Markdown"
+        )
+
+    except requests.RequestException:
+        await update.message.reply_text(
+            "❌ Could not connect to Helius."
+        )
+
+
 async def list_tokens(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -264,6 +378,10 @@ def main():
 
     bot.add_handler(
         CommandHandler("info", info)
+    )
+
+    bot.add_handler(
+        CommandHandler("activity", activity)
     )
 
     bot.add_handler(
