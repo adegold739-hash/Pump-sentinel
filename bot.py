@@ -4,22 +4,33 @@ import requests
 
 from flask import Flask
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+)
 
 from database import init_database, add_token, get_tokens
 from solana import get_token_info
 
 
+# =========================
+# CONFIG
+# =========================
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
-
 
 app = Flask(__name__)
 
 
+# =========================
+# FLASK SERVER
+# =========================
+
 @app.route("/")
 def home():
-    return "Pump Sentinel is online!"
+    return "Pump Sentinel is running."
 
 
 @app.route("/health")
@@ -27,814 +38,8 @@ def health():
     return "OK"
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    await update.message.reply_text(
-        "🛡️ Pump Sentinel\n\n"
-        "Commands:\n"
-        "/watch TOKEN_ADDRESS - Watch a token\n"
-        "/info TOKEN_ADDRESS - Get token information\n"
-        "/list - Show watched tokens\n"
-        "/activity TOKEN_ADDRESS - Recent activity\n"
-        "/tx SIGNATURE - Analyze a transaction\n"
-        "/status - Check connections\n"
-        "/ping - Test the bot"
-    )
-
-
-async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    await update.message.reply_text(
-        "🟢 Pump Sentinel is alive!"
-    )
-
-
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if not HELIUS_API_KEY:
-
-        await update.message.reply_text(
-            "🔴 Helius API key is missing."
-        )
-
-        return
-
-    try:
-
-        url = (
-            "https://mainnet.helius-rpc.com/"
-            f"?api-key={HELIUS_API_KEY}"
-        )
-
-        response = requests.post(
-            url,
-            json={
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "getHealth"
-            },
-            timeout=10
-        )
-
-        if response.ok:
-
-            await update.message.reply_text(
-                "🟢 Pump Sentinel\n\n"
-                "Telegram: ONLINE ✅\n"
-                "Helius: CONNECTED ✅"
-            )
-
-        else:
-
-            await update.message.reply_text(
-                "🟡 Telegram: ONLINE\n"
-                "🔴 Helius connection failed."
-            )
-
-    except Exception:
-
-        await update.message.reply_text(
-            "🟡 Telegram: ONLINE\n"
-            "🔴 Could not reach Helius."
-        )
-
-
-async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if not context.args:
-
-        await update.message.reply_text(
-            "❌ Give me a Solana token address.\n\n"
-            "Example:\n"
-            "/watch TOKEN_ADDRESS"
-        )
-
-        return
-
-    token_address = context.args[0].strip()
-
-    if len(token_address) < 32:
-
-        await update.message.reply_text(
-            "❌ That doesn't look like a valid Solana address."
-        )
-
-        return
-
-    await update.message.reply_text(
-        "🔎 Checking the token on Solana..."
-    )
-
-    token_info, error = get_token_info(token_address)
-
-    if error:
-
-        await update.message.reply_text(
-            f"❌ {error}"
-        )
-
-        return
-
-    added = add_token(token_address)
-
-    if not added:
-
-        await update.message.reply_text(
-            "👀 I'm already watching that token."
-        )
-
-        return
-
-    name = token_info["name"]
-    symbol = token_info["symbol"]
-
-    await update.message.reply_text(
-        f"👀 Now watching:\n\n"
-        f"🪙 {name} ({symbol})\n"
-        f"📍 `{token_address}`\n\n"
-        f"✅ Token verified on Solana."
-    )
-
-
-async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if not context.args:
-
-        await update.message.reply_text(
-            "❌ Give me a Solana token address.\n\n"
-            "Example:\n"
-            "/info TOKEN_ADDRESS"
-        )
-
-        return
-
-    token_address = context.args[0].strip()
-
-    if len(token_address) < 32:
-
-        await update.message.reply_text(
-            "❌ That doesn't look like a valid Solana address."
-        )
-
-        return
-
-    await update.message.reply_text(
-        "🔎 Fetching token information..."
-    )
-
-    token_info, error = get_token_info(token_address)
-
-    if error:
-
-        await update.message.reply_text(
-            f"❌ {error}"
-        )
-
-        return
-
-    watched_tokens = get_tokens()
-
-    watching = token_address in watched_tokens
-
-    watching_status = (
-        "👀 YES"
-        if watching
-        else "❌ NO"
-    )
-
-    await update.message.reply_text(
-        f"🪙 {token_info['name']}\n"
-        f"🔤 Symbol: {token_info['symbol']}\n\n"
-        f"📍 Address:\n"
-        f"`{token_address}`\n\n"
-        f"💰 Supply: {token_info['supply']}\n"
-        f"🔢 Decimals: {token_info['decimals']}\n"
-        f"👀 Watching: {watching_status}",
-        parse_mode="Markdown"
-    )
-
-
-async def list_tokens(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    tokens = get_tokens()
-
-    if not tokens:
-
-        await update.message.reply_text(
-            "📭 You're not watching any tokens yet."
-        )
-
-        return
-
-    message = "👀 Watched tokens:\n\n"
-
-    for number, token in enumerate(
-        tokens,
-        start=1
-    ):
-
-        message += (
-            f"{number}. `{token}`\n"
-        )
-
-    await update.message.reply_text(
-        message,
-        parse_mode="Markdown"
-    )
-
-
-async def activity(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not context.args:
-
-        await update.message.reply_text(
-            "❌ Give me a Solana token address.\n\n"
-            "Example:\n"
-            "/activity TOKEN_ADDRESS"
-        )
-
-        return
-
-    token_address = context.args[0].strip()
-
-    if len(token_address) < 32:
-
-        await update.message.reply_text(
-            "❌ That doesn't look like a valid Solana address."
-        )
-
-        return
-
-    if not HELIUS_API_KEY:
-
-        await update.message.reply_text(
-            "🔴 Helius API key is missing."
-        )
-
-        return
-
-    await update.message.reply_text(
-        "📡 Checking recent activity..."
-    )
-
-    try:
-
-        url = (
-            "https://mainnet.helius-rpc.com/"
-            f"?api-key={HELIUS_API_KEY}"
-        )
-
-        response = requests.post(
-            url,
-            json={
-                "jsonrpc": "2.0",
-                "id": "pump-sentinel",
-                "method": "getSignaturesForAddress",
-                "params": [
-                    token_address,
-                    {
-                        "limit": 10
-                    }
-                ]
-            },
-            timeout=15
-        )
-
-        if not response.ok:
-
-            await update.message.reply_text(
-                "❌ Helius request failed."
-            )
-
-            return
-
-        data = response.json()
-
-        if "error" in data:
-
-            await update.message.reply_text(
-                "❌ Helius returned an error."
-            )
-
-            return
-
-        transactions = data.get(
-            "result",
-            []
-        )
-
-        if not transactions:
-
-            await update.message.reply_text(
-                "📭 No recent transactions found."
-            )
-
-            return
-
-        message = (
-            "📡 Recent Activity\n\n"
-            f"📍 {token_address}\n"
-            f"🔎 Transactions found: "
-            f"{len(transactions)}\n\n"
-        )
-
-        for number, tx_data in enumerate(
-            transactions,
-            start=1
-        ):
-
-            status_icon = (
-                "✅"
-                if tx_data.get("err") is None
-                else "❌"
-            )
-
-            signature = tx_data.get(
-                "signature",
-                "Unknown"
-            )
-
-            block_time = tx_data.get(
-                "blockTime",
-                "Unknown"
-            )
-
-            message += (
-                f"{number}. {status_icon} "
-                f"{'Success' if status_icon == '✅' else 'Failed'}\n"
-                f"⏱️ {block_time}\n"
-                f"🔗 `{signature}`\n\n"
-            )
-
-        await update.message.reply_text(
-            message,
-            parse_mode="Markdown"
-        )
-
-    except requests.RequestException:
-
-        await update.message.reply_text(
-            "❌ Could not connect to Helius."
-        )
-
-    except Exception as error:
-
-        print(
-            f"Activity error: {error}"
-        )
-
-        await update.message.reply_text(
-            "❌ Something went wrong while "
-            "checking activity."
-        )
-
-
-def shorten_address(address):
-
-    if not address:
-        return "Unknown"
-
-    if len(address) <= 12:
-        return address
-
-    return (
-        address[:6]
-        + "..."
-        + address[-6:]
-    )
-
-
-async def tx(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not context.args:
-
-        await update.message.reply_text(
-            "❌ Give me a transaction signature.\n\n"
-            "Example:\n"
-            "/tx SIGNATURE"
-        )
-
-        return
-
-    signature = context.args[0].strip()
-
-    if not HELIUS_API_KEY:
-
-        await update.message.reply_text(
-            "🔴 Helius API key is missing."
-        )
-
-        return
-
-    await update.message.reply_text(
-        "🔍 Inspecting transaction instructions..."
-    )
-
-    try:
-
-        url = (
-            "https://mainnet.helius-rpc.com/"
-            f"?api-key={HELIUS_API_KEY}"
-        )
-
-        response = requests.post(
-            url,
-            json={
-                "jsonrpc": "2.0",
-                "id": "pump-sentinel-instructions",
-                "method": "getTransaction",
-                "params": [
-                    signature,
-                    {
-                        "encoding": "jsonParsed",
-                        "commitment": "confirmed",
-                        "maxSupportedTransactionVersion": 0
-                    }
-                ]
-            },
-            timeout=20
-        )
-
-        if not response.ok:
-
-            print(
-                "Transaction response:",
-                response.text
-            )
-
-            await update.message.reply_text(
-                "❌ Helius transaction request failed."
-            )
-
-            return
-
-        data = response.json()
-
-        if "error" in data:
-
-            print(
-                "Helius transaction error:",
-                data["error"]
-            )
-
-            await update.message.reply_text(
-                "❌ Helius returned an error."
-            )
-
-            return
-
-        transaction = data.get("result")
-
-        if not transaction:
-
-            await update.message.reply_text(
-                "❌ Transaction not found."
-            )
-
-            return
-
-        meta = transaction.get(
-            "meta"
-        )
-
-        message_data = (
-            transaction
-            .get("transaction", {})
-            .get("message", {})
-        )
-
-        if not meta:
-
-            await update.message.reply_text(
-                "⚠️ Transaction found, but "
-                "metadata is unavailable."
-            )
-
-            return
-
-        block_time = transaction.get(
-            "blockTime",
-            "Unknown"
-        )
-
-        slot = transaction.get(
-            "slot",
-            "Unknown"
-        )
-
-        fee = meta.get(
-            "fee",
-            0
-        )
-
-        err = meta.get(
-            "err"
-        )
-
-        status = (
-            "✅ SUCCESS"
-            if err is None
-            else "❌ FAILED"
-        )
-
-        account_keys = message_data.get(
-            "accountKeys",
-            []
-        )
-
-        instructions = message_data.get(
-            "instructions",
-            []
-        )
-
-        inner_instructions = meta.get(
-            "innerInstructions",
-            []
-        )
-
-        message = (
-            "🔬 Transaction Inspection\n\n"
-            f"📊 Status: {status}\n"
-            f"🧱 Slot: {slot}\n"
-            f"⏱️ Block time: {block_time}\n"
-            f"💸 Fee: {fee} lamports\n\n"
-        )
-
-        message += (
-            f"👥 Accounts involved: "
-            f"{len(account_keys)}\n"
-            f"🧩 Instructions: "
-            f"{len(instructions)}\n"
-            f"🔁 Inner instruction groups: "
-            f"{len(inner_instructions)}\n\n"
-        )
-
-        program_ids = []
-
-        for instruction in instructions:
-
-            program_id = instruction.get(
-                "programId"
-            )
-
-            if program_id:
-
-                program_ids.append(
-                    program_id
-                )
-
-            else:
-
-                parsed = instruction.get(
-                    "parsed"
-                )
-
-                if isinstance(parsed, dict):
-
-                    program = instruction.get(
-                        "program"
-                    )
-
-                    if program:
-                        program_ids.append(
-                            f"{program} (parsed)"
-                        )
-
-        unique_programs = []
-
-        for program in program_ids:
-
-            if program not in unique_programs:
-
-                unique_programs.append(
-                    program
-                )
-
-        if unique_programs:
-
-            message += (
-                "🏗️ Programs called:\n\n"
-            )
-
-            for program in unique_programs[:10]:
-
-                message += (
-                    f"• `{program}`\n"
-                )
-
-            message += "\n"
-
-        else:
-
-            message += (
-                "🏗️ Programs called:\n"
-                "None identified\n\n"
-            )
-
-        if instructions:
-
-            message += (
-                "🧩 Outer Instructions:\n\n"
-            )
-
-            for number, instruction in enumerate(
-                instructions[:10],
-                start=1
-            ):
-
-                program = instruction.get(
-                    "program"
-                )
-
-                program_id = instruction.get(
-                    "programId"
-                )
-
-                parsed = instruction.get(
-                    "parsed"
-                )
-
-                if program:
-
-                    label = program
-
-                elif program_id:
-
-                    label = shorten_address(
-                        program_id
-                    )
-
-                else:
-
-                    label = "Unknown"
-
-                parsed_type = ""
-
-                if isinstance(parsed, dict):
-
-                    parsed_type = parsed.get(
-                        "type",
-                        ""
-                    )
-
-                if parsed_type:
-
-                    message += (
-                        f"{number}. {label}\n"
-                        f"   Type: {parsed_type}\n"
-                    )
-
-                else:
-
-                    message += (
-                        f"{number}. {label}\n"
-                    )
-
-            message += "\n"
-
-        if inner_instructions:
-
-            message += (
-                "🔁 Inner Instructions:\n\n"
-            )
-
-            inner_count = 0
-
-            for group in inner_instructions:
-
-                group_index = group.get(
-                    "index",
-                    "?"
-                )
-
-                inner_list = group.get(
-                    "instructions",
-                    []
-                )
-
-                for instruction in inner_list[:5]:
-
-                    if inner_count >= 12:
-                        break
-
-                    program = instruction.get(
-                        "program"
-                    )
-
-                    program_id = instruction.get(
-                        "programId"
-                    )
-
-                    parsed = instruction.get(
-                        "parsed"
-                    )
-
-                    if program:
-
-                        label = program
-
-                    elif program_id:
-
-                        label = shorten_address(
-                            program_id
-                        )
-
-                    else:
-
-                        label = "Unknown"
-
-                    parsed_type = ""
-
-                    if isinstance(parsed, dict):
-
-                        parsed_type = parsed.get(
-                            "type",
-                            ""
-                        )
-
-                    if parsed_type:
-
-                        message += (
-                            f"• Group {group_index}: "
-                            f"{label}\n"
-                            f"  Type: {parsed_type}\n"
-                        )
-
-                    else:
-
-                        message += (
-                            f"• Group {group_index}: "
-                            f"{label}\n"
-                        )
-
-                    inner_count += 1
-
-                if inner_count >= 12:
-                    break
-
-            message += "\n"
-
-        else:
-
-            message += (
-                "🔁 Inner Instructions:\n"
-                "None found\n\n"
-            )
-
-        message += (
-            "🔗 Signature:\n"
-            f"`{signature}`"
-        )
-
-        if len(message) > 4000:
-
-            message = (
-                message[:3900]
-                + "\n\n⚠️ Output shortened."
-            )
-
-        await update.message.reply_text(
-            message,
-            parse_mode="Markdown"
-        )
-
-    except requests.RequestException:
-
-        await update.message.reply_text(
-            "❌ Could not connect to Helius."
-        )
-
-    except Exception as error:
-
-        print(
-            "Instruction analysis error:",
-            error
-        )
-
-        await update.message.reply_text(
-            "❌ Something went wrong while "
-            "inspecting the transaction."
-        )
-
-
 def run_web_server():
-
-    port = int(
-        os.environ.get(
-            "PORT",
-            10000
-        )
-    )
-
+    port = int(os.getenv("PORT", 10000))
     app.run(
         host="0.0.0.0",
         port=port,
@@ -842,18 +47,570 @@ def run_web_server():
     )
 
 
-def main():
+# =========================
+# HELPERS
+# =========================
 
-    print(
-        "🛡️ Starting Pump Sentinel..."
+def shorten_address(address, length=8):
+    if not address:
+        return "Unknown"
+
+    if len(address) <= length * 2:
+        return address
+
+    return f"{address[:length]}...{address[-length:]}"
+
+
+def helius_rpc(method, params):
+    if not HELIUS_API_KEY:
+        return None, "Helius API key is missing."
+
+    url = (
+        "https://mainnet.helius-rpc.com/"
+        f"?api-key={HELIUS_API_KEY}"
     )
 
-    if not TELEGRAM_BOT_TOKEN:
-
-        raise ValueError(
-            "TELEGRAM_BOT_TOKEN is missing."
+    try:
+        response = requests.post(
+            url,
+            json={
+                "jsonrpc": "2.0",
+                "id": "pump-sentinel",
+                "method": method,
+                "params": params,
+            },
+            timeout=20,
         )
 
+        if not response.ok:
+            return None, "Helius request failed."
+
+        data = response.json()
+
+        if "error" in data:
+            return None, data["error"].get(
+                "message",
+                "Helius returned an error."
+            )
+
+        return data.get("result"), None
+
+    except requests.RequestException:
+        return None, "Could not connect to Helius."
+
+
+def format_sol(amount_lamports):
+    return amount_lamports / 1_000_000_000
+
+
+def extract_parsed_instruction(instruction):
+    """
+    Safely extracts parsed instruction information.
+    """
+
+    if not isinstance(instruction, dict):
+        return None
+
+    parsed = instruction.get("parsed")
+
+    if not isinstance(parsed, dict):
+        return None
+
+    info = parsed.get("info", {})
+
+    if not isinstance(info, dict):
+        info = {}
+
+    return {
+        "program": instruction.get("program", "unknown"),
+        "program_id": instruction.get("programId"),
+        "type": parsed.get("type", "unknown"),
+        "info": info,
+    }
+
+
+def collect_instructions(transaction):
+    """
+    Collect outer and inner parsed instructions.
+    """
+
+    message = (
+        transaction.get("transaction", {})
+        .get("message", {})
+    )
+
+    meta = transaction.get("meta") or {}
+
+    outer = message.get("instructions", []) or []
+
+    inner_groups = meta.get("innerInstructions", []) or []
+
+    instructions = []
+
+    for instruction in outer:
+        parsed = extract_parsed_instruction(instruction)
+
+        if parsed:
+            instructions.append({
+                "location": "outer",
+                "group": None,
+                "data": parsed,
+            })
+
+    for group in inner_groups:
+        group_index = group.get("index")
+
+        for instruction in group.get("instructions", []) or []:
+            parsed = extract_parsed_instruction(instruction)
+
+            if parsed:
+                instructions.append({
+                    "location": "inner",
+                    "group": group_index,
+                    "data": parsed,
+                })
+
+    return instructions
+
+
+def collect_transfers(transaction):
+    """
+    Extract SOL and SPL-token transfers from both
+    outer and inner parsed instructions.
+    """
+
+    instructions = collect_instructions(transaction)
+
+    sol_transfers = []
+    token_transfers = []
+
+    for item in instructions:
+        data = item["data"]
+        program = data["program"]
+        instruction_type = data["type"]
+        info = data["info"]
+
+        # =========================
+        # SOL TRANSFER
+        # =========================
+
+        if (
+            program == "system"
+            and instruction_type == "transfer"
+        ):
+            lamports = info.get("lamports")
+
+            if lamports is not None:
+                sol_transfers.append({
+                    "source": info.get("source"),
+                    "destination": info.get("destination"),
+                    "lamports": lamports,
+                    "location": item["location"],
+                    "group": item["group"],
+                })
+
+        # =========================
+        # TOKEN TRANSFERS
+        # =========================
+
+        if (
+            program == "spl-token"
+            and instruction_type in (
+                "transfer",
+                "transferChecked",
+            )
+        ):
+            token_amount = info.get("tokenAmount", {})
+
+            if not isinstance(token_amount, dict):
+                token_amount = {}
+
+            raw_amount = info.get("amount")
+
+            if raw_amount is None:
+                raw_amount = token_amount.get("amount")
+
+            decimals = token_amount.get("decimals")
+
+            ui_amount = token_amount.get("uiAmount")
+
+            if ui_amount is None and raw_amount is not None:
+                try:
+                    if decimals is not None:
+                        ui_amount = int(raw_amount) / (
+                            10 ** int(decimals)
+                        )
+                    else:
+                        ui_amount = raw_amount
+                except (ValueError, TypeError, ZeroDivisionError):
+                    ui_amount = raw_amount
+
+            token_transfers.append({
+                "source": info.get("source"),
+                "destination": info.get("destination"),
+                "authority": info.get("authority"),
+                "mint": info.get("mint"),
+                "amount": raw_amount,
+                "decimals": decimals,
+                "ui_amount": ui_amount,
+                "location": item["location"],
+                "group": item["group"],
+                "type": instruction_type,
+            })
+
+    return sol_transfers, token_transfers
+
+
+# =========================
+# /START
+# =========================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🟢 Pump Sentinel\n\n"
+        "Your Solana memecoin monitoring system is online.\n\n"
+        "Commands:\n"
+        "/ping - Test bot\n"
+        "/status - Check systems\n"
+        "/watch <token> - Watch a token\n"
+        "/list - List watched tokens\n"
+        "/info <token> - Token information\n"
+        "/activity <address> - Recent activity\n"
+        "/tx <signature> - Inspect transaction"
+    )
+
+
+# =========================
+# /PING
+# =========================
+
+async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🏓 Pong! Pump Sentinel is alive.")
+
+
+# =========================
+# /STATUS
+# =========================
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    telegram_status = "ONLINE ✅"
+
+    if HELIUS_API_KEY:
+        helius_status = "CONNECTED ✅"
+    else:
+        helius_status = "MISSING ❌"
+
+    await update.message.reply_text(
+        "🟢 Pump Sentinel\n\n"
+        f"Telegram: {telegram_status}\n"
+        f"Helius: {helius_status}"
+    )
+
+
+# =========================
+# /WATCH
+# =========================
+
+async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "Usage:\n/watch <token_address>"
+        )
+        return
+
+    token_address = context.args[0].strip()
+
+    added = add_token(token_address)
+
+    if added:
+        await update.message.reply_text(
+            "👁️ Token added to watchlist.\n\n"
+            f"Token:\n{token_address}"
+        )
+    else:
+        await update.message.reply_text(
+            "⚠️ That token is already being watched."
+        )
+
+
+# =========================
+# /LIST
+# =========================
+
+async def list_tokens(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tokens = get_tokens()
+
+    if not tokens:
+        await update.message.reply_text(
+            "📭 Watchlist is empty."
+        )
+        return
+
+    message = "👁️ Watched Tokens\n\n"
+
+    for index, token in enumerate(tokens, start=1):
+        message += f"{index}. {token}\n"
+
+    await update.message.reply_text(message)
+
+
+# =========================
+# /INFO
+# =========================
+
+async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "Usage:\n/info <token_address>"
+        )
+        return
+
+    token_address = context.args[0].strip()
+
+    token_info, error = get_token_info(token_address)
+
+    if error:
+        await update.message.reply_text(
+            f"❌ {error}"
+        )
+        return
+
+    message = (
+        "🪙 Token Information\n\n"
+        f"Name: {token_info.get('name')}\n"
+        f"Symbol: {token_info.get('symbol')}\n"
+        f"Address:\n{token_info.get('address')}\n\n"
+        f"Supply: {token_info.get('supply')}\n"
+        f"Decimals: {token_info.get('decimals')}"
+    )
+
+    await update.message.reply_text(message)
+
+
+# =========================
+# /ACTIVITY
+# =========================
+
+async def activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "Usage:\n/activity <wallet_or_address>"
+        )
+        return
+
+    address = context.args[0].strip()
+
+    result, error = helius_rpc(
+        "getSignaturesForAddress",
+        [
+            address,
+            {
+                "limit": 10
+            }
+        ]
+    )
+
+    if error:
+        await update.message.reply_text(
+            f"❌ {error}"
+        )
+        return
+
+    if not result:
+        await update.message.reply_text(
+            "📭 No recent activity found."
+        )
+        return
+
+    message = "📊 Recent Activity\n\n"
+
+    for index, tx in enumerate(result, start=1):
+        signature = tx.get("signature", "Unknown")
+        slot = tx.get("slot", "Unknown")
+        err = tx.get("err")
+
+        status_text = "❌ FAILED" if err else "✅ SUCCESS"
+
+        message += (
+            f"{index}. {status_text}\n"
+            f"Slot: {slot}\n"
+            f"TX:\n{signature}\n\n"
+        )
+
+    await update.message.reply_text(message)
+
+
+# =========================
+# /TX
+# =========================
+
+async def tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "Usage:\n/tx <transaction_signature>"
+        )
+        return
+
+    signature = context.args[0].strip()
+
+    result, error = helius_rpc(
+        "getTransaction",
+        [
+            signature,
+            {
+                "encoding": "jsonParsed",
+                "commitment": "confirmed",
+                "maxSupportedTransactionVersion": 0
+            }
+        ]
+    )
+
+    if error:
+        await update.message.reply_text(
+            f"❌ {error}"
+        )
+        return
+
+    if not result:
+        await update.message.reply_text(
+            "❌ Transaction not found."
+        )
+        return
+
+    meta = result.get("meta") or {}
+
+    status_text = (
+        "❌ FAILED"
+        if meta.get("err")
+        else "✅ SUCCESS"
+    )
+
+    slot = result.get("slot", "Unknown")
+    block_time = result.get("blockTime", "Unknown")
+    fee = meta.get("fee", 0)
+
+    sol_transfers, token_transfers = collect_transfers(
+        result
+    )
+
+    message = (
+        "🔬 Transaction Detail\n\n"
+        f"📊 Status: {status_text}\n"
+        f"🧱 Slot: {slot}\n"
+        f"⏱️ Block time: {block_time}\n"
+        f"💸 Fee: {fee:,} lamports\n"
+    )
+
+    # =========================
+    # SOL TRANSFERS
+    # =========================
+
+    if sol_transfers:
+        message += "\n💰 SOL Transfers:\n"
+
+        for index, transfer in enumerate(
+            sol_transfers,
+            start=1
+        ):
+            sol_amount = format_sol(
+                transfer["lamports"]
+            )
+
+            source = transfer.get("source")
+            destination = transfer.get("destination")
+
+            message += (
+                f"\n{index}. {sol_amount:.9f} SOL\n"
+                f"From: {shorten_address(source)}\n"
+                f"To: {shorten_address(destination)}\n"
+            )
+    else:
+        message += "\n💰 SOL Transfers:\nNone detected.\n"
+
+    # =========================
+    # TOKEN TRANSFERS
+    # =========================
+
+    if token_transfers:
+        message += "\n🪙 Token Transfers:\n"
+
+        for index, transfer in enumerate(
+            token_transfers,
+            start=1
+        ):
+            mint = transfer.get("mint")
+            source = transfer.get("source")
+            destination = transfer.get("destination")
+            authority = transfer.get("authority")
+            amount = transfer.get("ui_amount")
+
+            if amount is None:
+                amount = transfer.get("amount", "Unknown")
+
+            message += (
+                f"\n{index}. Amount: {amount}\n"
+                f"Mint: {shorten_address(mint)}\n"
+                f"From: {shorten_address(source)}\n"
+                f"To: {shorten_address(destination)}\n"
+                f"Authority: {shorten_address(authority)}\n"
+            )
+    else:
+        message += "\n🪙 Token Transfers:\nNone detected.\n"
+
+    # =========================
+    # PROGRAMS
+    # =========================
+
+    message += "\n🏗️ Programs Called:\n"
+
+    programs = []
+
+    outer_instructions = (
+        result.get("transaction", {})
+        .get("message", {})
+        .get("instructions", [])
+    )
+
+    for instruction in outer_instructions:
+        program_id = instruction.get("programId")
+
+        if program_id and program_id not in programs:
+            programs.append(program_id)
+
+    inner_groups = meta.get("innerInstructions", []) or []
+
+    for group in inner_groups:
+        for instruction in group.get(
+            "instructions",
+            []
+        ):
+            program_id = instruction.get("programId")
+
+            if program_id and program_id not in programs:
+                programs.append(program_id)
+
+    for program_id in programs:
+        message += (
+            f"• {shorten_address(program_id, 12)}\n"
+        )
+
+    message += (
+        "\n🔗 Signature:\n"
+        f"{signature}"
+    )
+
+    # Telegram message safety
+    if len(message) > 4000:
+        message = message[:3950] + "\n\n…truncated."
+
+    await update.message.reply_text(message)
+
+
+# =========================
+# MAIN
+# =========================
+
+def main():
     init_database()
 
     threading.Thread(
@@ -861,74 +618,50 @@ def main():
         daemon=True
     ).start()
 
-    bot = (
-        Application
-        .builder()
+    if not TELEGRAM_BOT_TOKEN:
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN is missing."
+        )
+
+    application = (
+        Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
         .build()
     )
 
-    bot.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
+    application.add_handler(
+        CommandHandler("start", start)
     )
 
-    bot.add_handler(
-        CommandHandler(
-            "ping",
-            ping
-        )
+    application.add_handler(
+        CommandHandler("ping", ping)
     )
 
-    bot.add_handler(
-        CommandHandler(
-            "status",
-            status
-        )
+    application.add_handler(
+        CommandHandler("status", status)
     )
 
-    bot.add_handler(
-        CommandHandler(
-            "watch",
-            watch
-        )
+    application.add_handler(
+        CommandHandler("watch", watch)
     )
 
-    bot.add_handler(
-        CommandHandler(
-            "info",
-            info
-        )
+    application.add_handler(
+        CommandHandler("list", list_tokens)
     )
 
-    bot.add_handler(
-        CommandHandler(
-            "list",
-            list_tokens
-        )
+    application.add_handler(
+        CommandHandler("info", info)
     )
 
-    bot.add_handler(
-        CommandHandler(
-            "activity",
-            activity
-        )
+    application.add_handler(
+        CommandHandler("activity", activity)
     )
 
-    bot.add_handler(
-        CommandHandler(
-            "tx",
-            tx
-        )
+    application.add_handler(
+        CommandHandler("tx", tx)
     )
 
-    print(
-        "🛡️ Pump Sentinel Telegram bot is running..."
-    )
-
-    bot.run_polling()
+    application.run_polling()
 
 
 if __name__ == "__main__":
