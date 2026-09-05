@@ -10,23 +10,31 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from database import init_database, add_token, get_tokens
-from solana import get_token_info
+from database import (
+    init_database,
+    add_token,
+    get_tokens,
+)
 
 
-# =========================
+# =========================================================
 # CONFIG
-# =========================
+# =========================================================
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 
+HELIUS_URL = (
+    "https://mainnet.helius-rpc.com/"
+    f"?api-key={HELIUS_API_KEY}"
+)
+
 app = Flask(__name__)
 
 
-# =========================
-# FLASK SERVER
-# =========================
+# =========================================================
+# BASIC WEB SERVER
+# =========================================================
 
 @app.route("/")
 def home():
@@ -39,8 +47,7 @@ def health():
 
 
 def run_web_server():
-    port = int(os.getenv("PORT", 10000))
-
+    port = int(os.environ.get("PORT", 10000))
     app.run(
         host="0.0.0.0",
         port=port,
@@ -48,9 +55,9 @@ def run_web_server():
     )
 
 
-# =========================
+# =========================================================
 # HELPERS
-# =========================
+# =========================================================
 
 def shorten_address(address, length=8):
     if not address:
@@ -62,18 +69,20 @@ def shorten_address(address, length=8):
     return f"{address[:length]}...{address[-length:]}"
 
 
+def format_sol(amount):
+    if amount is None:
+        return "0 SOL"
+
+    return f"{amount:,.9f} SOL"
+
+
 def helius_rpc(method, params):
     if not HELIUS_API_KEY:
         return None, "Helius API key is missing."
 
-    url = (
-        "https://mainnet.helius-rpc.com/"
-        f"?api-key={HELIUS_API_KEY}"
-    )
-
     try:
         response = requests.post(
-            url,
+            HELIUS_URL,
             json={
                 "jsonrpc": "2.0",
                 "id": "pump-sentinel",
@@ -96,667 +105,59 @@ def helius_rpc(method, params):
 
         return data.get("result"), None
 
-    except requests.RequestException:
-        return None, "Could not connect to Helius."
+    except requests.RequestException as error:
+        return None, f"Network error: {error}"
 
 
-def format_sol(lamports):
-    try:
-        return lamports / 1_000_000_000
-    except (TypeError, ValueError):
-        return 0
-
-
-# =========================
-# FEE PAYER
-# =========================
-
-def get_fee_payer(transaction):
-    message = (
-        transaction
-        .get("transaction", {})
-        .get("message", {})
-    )
-
-    account_keys = (
-        message.get("accountKeys", [])
-        or []
-    )
-
-    if not account_keys:
-        return None
-
-    first = account_keys[0]
-
-    if isinstance(first, dict):
-        return first.get("pubkey")
-
-    return first
-
-
-# =========================
-# ACCOUNT KEYS
-# =========================
-
-def get_account_keys(transaction):
-    message = (
-        transaction
-        .get("transaction", {})
-        .get("message", {})
-    )
-
-    keys = []
-
-    for key in (
-        message.get("accountKeys", [])
-        or []
-    ):
-        if isinstance(key, dict):
-            keys.append(
-                key.get("pubkey")
-            )
-        else:
-            keys.append(key)
-
-    return keys
-
-
-# =========================
-# PRE/POST TOKEN BALANCES
-# =========================
-
-def get_token_balance_changes(transaction):
-    meta = transaction.get("meta") or {}
-
-    account_keys = get_account_keys(
-        transaction
-    )
-
-    pre_balances = (
-        meta.get("preTokenBalances", [])
-        or []
-    )
-
-    post_balances = (
-        meta.get("postTokenBalances", [])
-        or []
-    )
-
-    accounts = {}
-
-    # -------------------------
-    # PRE BALANCES
-    # -------------------------
-
-    for balance in pre_balances:
-        account_index = balance.get(
-            "accountIndex"
-        )
-
-        if account_index is None:
-            continue
-
-        if account_index >= len(account_keys):
-            continue
-
-        account = account_keys[
-            account_index
-        ]
-
-        mint = balance.get("mint")
-
-        token_amount = (
-            balance
-            .get("uiTokenAmount", {})
-        )
-
-        amount = token_amount.get(
-            "uiAmount"
-        )
-
-        if amount is None:
-            amount = 0
-
-        accounts[account] = {
-            "account": account,
-            "mint": mint,
-            "owner": balance.get(
-                "owner"
-            ),
-            "pre": amount,
-            "post": 0,
-        }
-
-    # -------------------------
-    # POST BALANCES
-    # -------------------------
-
-    for balance in post_balances:
-        account_index = balance.get(
-            "accountIndex"
-        )
-
-        if account_index is None:
-            continue
-
-        if account_index >= len(account_keys):
-            continue
-
-        account = account_keys[
-            account_index
-        ]
-
-        mint = balance.get("mint")
-
-        token_amount = (
-            balance
-            .get("uiTokenAmount", {})
-        )
-
-        amount = token_amount.get(
-            "uiAmount"
-        )
-
-        if amount is None:
-            amount = 0
-
-        if account not in accounts:
-            accounts[account] = {
-                "account": account,
-                "mint": mint,
-                "owner": balance.get(
-                    "owner"
-                ),
-                "pre": 0,
-                "post": amount,
-            }
-        else:
-            accounts[account]["post"] = amount
-
-            if not accounts[account].get(
-                "owner"
-            ):
-                accounts[account]["owner"] = (
-                    balance.get("owner")
-                )
-
-    changes = []
-
-    for account_data in accounts.values():
-        pre = account_data.get(
-            "pre",
-            0
-        )
-
-        post = account_data.get(
-            "post",
-            0
-        )
-
-        try:
-            net = float(post) - float(pre)
-        except (
-            TypeError,
-            ValueError
-        ):
-            net = 0
-
-        if net == 0:
-            continue
-
-        changes.append({
-            "account":
-                account_data.get(
-                    "account"
-                ),
-            "mint":
-                account_data.get(
-                    "mint"
-                ),
-            "owner":
-                account_data.get(
-                    "owner"
-                ),
-            "pre": pre,
-            "post": post,
-            "net": net,
-        })
-
-    return changes
-
-
-# =========================
-# SOL BALANCE CHANGE
-# =========================
-
-def get_sol_balance_changes(transaction):
-    meta = transaction.get("meta") or {}
-
-    account_keys = get_account_keys(
-        transaction
-    )
-
-    pre = (
-        meta.get("preBalances", [])
-        or []
-    )
-
-    post = (
-        meta.get("postBalances", [])
-        or []
-    )
-
-    changes = []
-
-    count = min(
-        len(account_keys),
-        len(pre),
-        len(post)
-    )
-
-    for index in range(count):
-        try:
-            difference = (
-                int(post[index])
-                - int(pre[index])
-            )
-        except (
-            TypeError,
-            ValueError
-        ):
-            continue
-
-        if difference == 0:
-            continue
-
-        changes.append({
-            "account":
-                account_keys[index],
-            "pre":
-                pre[index],
-            "post":
-                post[index],
-            "net":
-                difference,
-        })
-
-    return changes
-
-
-# =========================
-# INSTRUCTION PARSER
-# =========================
-
-def extract_parsed_instruction(
-    instruction
-):
-    if not isinstance(
-        instruction,
-        dict
-    ):
-        return None
-
-    parsed = instruction.get(
-        "parsed"
-    )
-
-    if not isinstance(
-        parsed,
-        dict
-    ):
-        return None
-
-    info = parsed.get(
-        "info",
-        {}
-    )
-
-    if not isinstance(
-        info,
-        dict
-    ):
-        info = {}
-
-    return {
-        "program":
-            instruction.get(
-                "program",
-                "unknown"
-            ),
-        "program_id":
-            instruction.get(
-                "programId"
-            ),
-        "type":
-            parsed.get(
-                "type",
-                "unknown"
-            ),
-        "info": info,
-    }
-
-
-def collect_instructions(
-    transaction
-):
-    message = (
-        transaction
-        .get("transaction", {})
-        .get("message", {})
-    )
-
-    meta = transaction.get(
-        "meta"
-    ) or {}
-
-    instructions = []
-
-    for instruction in (
-        message.get(
-            "instructions",
-            []
-        )
-        or []
-    ):
-        parsed = (
-            extract_parsed_instruction(
-                instruction
-            )
-        )
-
-        if parsed:
-            instructions.append({
-                "location": "outer",
-                "group": None,
-                "data": parsed,
-            })
-
-    for group in (
-        meta.get(
-            "innerInstructions",
-            []
-        )
-        or []
-    ):
-        group_index = group.get(
-            "index"
-        )
-
-        for instruction in (
-            group.get(
-                "instructions",
-                []
-            )
-            or []
-        ):
-            parsed = (
-                extract_parsed_instruction(
-                    instruction
-                )
-            )
-
-            if parsed:
-                instructions.append({
-                    "location": "inner",
-                    "group": group_index,
-                    "data": parsed,
-                })
-
-    return instructions
-
-
-# =========================
-# TRANSFERS
-# =========================
-
-def collect_transfers(transaction):
-    instructions = (
-        collect_instructions(
-            transaction
-        )
-    )
-
-    sol_transfers = []
-    token_transfers = []
-
-    for item in instructions:
-        data = item["data"]
-
-        program = data["program"]
-        instruction_type = data["type"]
-        info = data["info"]
-
-        # -------------------------
-        # SOL TRANSFERS
-        # -------------------------
-
-        if (
-            program == "system"
-            and instruction_type == "transfer"
-        ):
-            lamports = info.get(
-                "lamports"
-            )
-
-            if lamports is not None:
-                sol_transfers.append({
-                    "source":
-                        info.get(
-                            "source"
-                        ),
-                    "destination":
-                        info.get(
-                            "destination"
-                        ),
-                    "lamports":
-                        lamports,
-                })
-
-        # -------------------------
-        # TOKEN TRANSFERS
-        # -------------------------
-
-        if (
-            program == "spl-token"
-            and instruction_type in (
-                "transfer",
-                "transferChecked",
-            )
-        ):
-            token_amount = info.get(
-                "tokenAmount",
-                {}
-            )
-
-            if not isinstance(
-                token_amount,
-                dict
-            ):
-                token_amount = {}
-
-            amount = info.get(
-                "amount"
-            )
-
-            if amount is None:
-                amount = token_amount.get(
-                    "amount"
-                )
-
-            decimals = token_amount.get(
-                "decimals"
-            )
-
-            ui_amount = token_amount.get(
-                "uiAmount"
-            )
-
-            if (
-                ui_amount is None
-                and amount is not None
-            ):
-                try:
-                    if decimals is not None:
-                        ui_amount = (
-                            int(amount)
-                            / (
-                                10
-                                ** int(decimals)
-                            )
-                        )
-                except (
-                    ValueError,
-                    TypeError,
-                    ZeroDivisionError
-                ):
-                    ui_amount = None
-
-            token_transfers.append({
-                "source":
-                    info.get("source"),
-                "destination":
-                    info.get("destination"),
-                "authority":
-                    info.get("authority"),
-                "mint":
-                    info.get("mint"),
-                "amount":
-                    amount,
-                "ui_amount":
-                    ui_amount,
-            })
-
-    return (
-        sol_transfers,
-        token_transfers
-    )
-
-
-# =========================
-# TRADE CLASSIFICATION
-# =========================
-
-def classify_trade(
-    wallet,
-    target_mint,
-    token_changes,
-    sol_changes
-):
-    wallet_token_change = 0
-
-    for change in token_changes:
-        if change.get("mint") != target_mint:
-            continue
-
-        owner = change.get(
-            "owner"
-        )
-
-        account = change.get(
-            "account"
-        )
-
-        # Prefer explicit owner.
-        if owner == wallet:
-            wallet_token_change += change[
-                "net"
-            ]
-
-        # Some RPC responses may not
-        # contain owner. The fee payer
-        # can still be associated with
-        # the token account through
-        # transaction-level evidence.
-        elif not owner:
-            wallet_token_change += 0
-
-    wallet_sol_change = 0
-
-    for change in sol_changes:
-        if change.get("account") == wallet:
-            wallet_sol_change += change[
-                "net"
-            ]
-
-    # Ignore the normal transaction fee
-    # when determining trade direction.
-    #
-    # The important question is whether
-    # the wallet's SOL/token position moved
-    # in opposite directions.
-
-    if (
-        wallet_sol_change < 0
-        and wallet_token_change > 0
-    ):
-        return (
-            "🟢 POSSIBLE BUY",
-            wallet_sol_change,
-            wallet_token_change
-        )
-
-    if (
-        wallet_sol_change > 0
-        and wallet_token_change < 0
-    ):
-        return (
-            "🔴 POSSIBLE SELL",
-            wallet_sol_change,
-            wallet_token_change
-        )
-
-    return (
-        "⚪ UNCLEAR",
-        wallet_sol_change,
-        wallet_token_change
-    )
-
-
-# =========================
+# =========================================================
 # /START
-# =========================
+# =========================================================
 
-async def start(
+async def start_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
     await update.message.reply_text(
         "🟢 Pump Sentinel\n\n"
-        "Your Solana memecoin monitoring "
-        "system is online.\n\n"
+        "Your Solana memecoin risk-monitoring bot is online.\n\n"
         "Commands:\n"
-        "/ping - Test bot\n"
-        "/status - Check systems\n"
+        "/status - Check bot status\n"
+        "/ping - Test Telegram\n"
         "/watch <token> - Watch a token\n"
         "/list - List watched tokens\n"
         "/info <token> - Token information\n"
-        "/activity <address> - Recent activity\n"
-        "/tx <signature> - Inspect transaction"
+        "/activity <token> - Recent transactions\n"
+        "/tx <signature> - Transaction intelligence"
     )
 
 
-# =========================
+# =========================================================
 # /PING
-# =========================
+# =========================================================
 
-async def ping(
+async def ping_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
     await update.message.reply_text(
-        "🏓 Pong! Pump Sentinel is alive."
+        "🏓 Pong!\n\n"
+        "Telegram connection is working."
     )
 
 
-# =========================
+# =========================================================
 # /STATUS
-# =========================
+# =========================================================
 
-async def status(
+async def status_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
-    telegram_status = "ONLINE ✅"
+    telegram_status = (
+        "ONLINE ✅"
+        if TELEGRAM_BOT_TOKEN
+        else "MISSING ❌"
+    )
 
     helius_status = (
         "CONNECTED ✅"
@@ -771,11 +172,11 @@ async def status(
     )
 
 
-# =========================
+# =========================================================
 # /WATCH
-# =========================
+# =========================================================
 
-async def watch(
+async def watch_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
@@ -785,31 +186,32 @@ async def watch(
         )
         return
 
-    token_address = (
-        context.args[0].strip()
-    )
+    token_address = context.args[0].strip()
 
-    added = add_token(
-        token_address
-    )
+    if len(token_address) < 30:
+        await update.message.reply_text(
+            "❌ That doesn't look like a valid Solana token address."
+        )
+        return
+
+    added = add_token(token_address)
 
     if added:
         await update.message.reply_text(
             "👁️ Token added to watchlist.\n\n"
-            f"Token:\n{token_address}"
+            f"🎯 {token_address}"
         )
     else:
         await update.message.reply_text(
-            "⚠️ That token is already "
-            "being watched."
+            "ℹ️ That token is already being watched."
         )
 
 
-# =========================
+# =========================================================
 # /LIST
-# =========================
+# =========================================================
 
-async def list_tokens(
+async def list_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
@@ -817,32 +219,29 @@ async def list_tokens(
 
     if not tokens:
         await update.message.reply_text(
-            "📭 Watchlist is empty."
+            "📭 Your watchlist is empty."
         )
         return
 
-    message = (
-        "👁️ Watched Tokens\n\n"
-    )
+    message = "👁️ Watched Tokens\n\n"
 
-    for index, token in enumerate(
-        tokens,
-        start=1
-    ):
+    for number, token in enumerate(tokens, start=1):
         message += (
-            f"{index}. {token}\n"
+            f"{number}. {shorten_address(token, 10)}\n"
+            f"`{token}`\n\n"
         )
 
     await update.message.reply_text(
-        message
+        message,
+        parse_mode="Markdown"
     )
 
 
-# =========================
+# =========================================================
 # /INFO
-# =========================
+# =========================================================
 
-async def info(
+async def info_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
@@ -852,14 +251,13 @@ async def info(
         )
         return
 
-    token_address = (
-        context.args[0].strip()
-    )
+    token_address = context.args[0].strip()
 
-    token_info, error = (
-        get_token_info(
-            token_address
-        )
+    result, error = helius_rpc(
+        "getAsset",
+        {
+            "id": token_address
+        }
     )
 
     if error:
@@ -868,47 +266,51 @@ async def info(
         )
         return
 
-    message = (
-        "🪙 Token Information\n\n"
-        f"Name: "
-        f"{token_info.get('name')}\n"
-        f"Symbol: "
-        f"{token_info.get('symbol')}\n"
-        f"Address:\n"
-        f"{token_info.get('address')}\n\n"
-        f"Supply: "
-        f"{token_info.get('supply')}\n"
-        f"Decimals: "
-        f"{token_info.get('decimals')}"
-    )
+    if not result:
+        await update.message.reply_text(
+            "❌ Token was not found."
+        )
+        return
+
+    token_info = result.get("token_info", {})
+    content = result.get("content", {})
+    metadata = content.get("metadata", {})
+
+    name = metadata.get("name", "Unknown")
+    symbol = metadata.get("symbol", "Unknown")
+    decimals = token_info.get("decimals", "Unknown")
+    supply = token_info.get("supply", "Unknown")
 
     await update.message.reply_text(
-        message
+        "🪙 Token Intelligence\n\n"
+        f"Name: {name}\n"
+        f"Symbol: {symbol}\n"
+        f"Decimals: {decimals}\n"
+        f"Supply: {supply}\n\n"
+        f"Address:\n{token_address}"
     )
 
 
-# =========================
+# =========================================================
 # /ACTIVITY
-# =========================
+# =========================================================
 
-async def activity(
+async def activity_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
     if not context.args:
         await update.message.reply_text(
-            "Usage:\n/activity <wallet_or_address>"
+            "Usage:\n/activity <token_address>"
         )
         return
 
-    address = (
-        context.args[0].strip()
-    )
+    token_address = context.args[0].strip()
 
     result, error = helius_rpc(
         "getSignaturesForAddress",
         [
-            address,
+            token_address,
             {
                 "limit": 10
             }
@@ -923,54 +325,385 @@ async def activity(
 
     if not result:
         await update.message.reply_text(
-            "📭 No recent activity found."
+            "No recent activity found."
         )
         return
 
     message = (
-        "📊 Recent Activity\n\n"
+        "📡 Recent Activity\n\n"
+        f"Token: {shorten_address(token_address, 10)}\n\n"
     )
 
-    for index, tx_data in enumerate(
-        result,
-        start=1
-    ):
-        signature = tx_data.get(
-            "signature",
-            "Unknown"
-        )
-
-        slot = tx_data.get(
-            "slot",
-            "Unknown"
-        )
-
-        err = tx_data.get(
-            "err"
-        )
-
-        status_text = (
+    for number, transaction in enumerate(result, start=1):
+        signature = transaction.get("signature", "")
+        status = (
             "❌ FAILED"
-            if err
+            if transaction.get("err")
             else "✅ SUCCESS"
         )
 
         message += (
-            f"{index}. {status_text}\n"
-            f"Slot: {slot}\n"
-            f"TX:\n{signature}\n\n"
+            f"{number}. {status}\n"
+            f"`{signature}`\n\n"
         )
 
     await update.message.reply_text(
-        message
+        message,
+        parse_mode="Markdown"
     )
 
 
-# =========================
-# /TX
-# =========================
+# =========================================================
+# TRANSACTION HELPERS
+# =========================================================
 
-async def tx(
+def get_fee_payer(transaction):
+    message = transaction.get("transaction", {}).get(
+        "message",
+        {}
+    )
+
+    account_keys = message.get("accountKeys", [])
+
+    for key in account_keys:
+        if isinstance(key, dict):
+            if key.get("signer"):
+                return key.get("pubkey")
+
+    if account_keys:
+        first = account_keys[0]
+
+        if isinstance(first, dict):
+            return first.get("pubkey")
+
+        return first
+
+    return None
+
+
+def get_account_keys(transaction):
+    message = transaction.get("transaction", {}).get(
+        "message",
+        {}
+    )
+
+    return message.get("accountKeys", [])
+
+
+def get_token_balance_changes(transaction):
+    meta = transaction.get("meta") or {}
+
+    pre_balances = meta.get("preTokenBalances", [])
+    post_balances = meta.get("postTokenBalances", [])
+
+    pre_map = {}
+    post_map = {}
+
+    for balance in pre_balances:
+        account_index = balance.get("accountIndex")
+
+        pre_map[account_index] = balance
+
+    for balance in post_balances:
+        account_index = balance.get("accountIndex")
+
+        post_map[account_index] = balance
+
+    all_indexes = set(pre_map) | set(post_map)
+
+    changes = []
+
+    for account_index in all_indexes:
+        pre = pre_map.get(account_index, {})
+        post = post_map.get(account_index, {})
+
+        mint = (
+            post.get("mint")
+            or pre.get("mint")
+        )
+
+        owner = (
+            post.get("owner")
+            or pre.get("owner")
+        )
+
+        pre_amount = (
+            pre.get("uiTokenAmount", {})
+            .get("uiAmount")
+            or 0
+        )
+
+        post_amount = (
+            post.get("uiTokenAmount", {})
+            .get("uiAmount")
+            or 0
+        )
+
+        net_change = post_amount - pre_amount
+
+        changes.append({
+            "account_index": account_index,
+            "mint": mint,
+            "owner": owner,
+            "before": pre_amount,
+            "after": post_amount,
+            "net": net_change,
+        })
+
+    return changes
+
+
+def get_sol_balance_changes(transaction):
+    meta = transaction.get("meta") or {}
+
+    pre_balances = meta.get("preBalances", [])
+    post_balances = meta.get("postBalances", [])
+
+    changes = []
+
+    for index in range(
+        min(len(pre_balances), len(post_balances))
+    ):
+        pre = pre_balances[index]
+        post = post_balances[index]
+
+        net_lamports = post - pre
+        net_sol = net_lamports / 1_000_000_000
+
+        changes.append({
+            "account_index": index,
+            "net_sol": net_sol,
+        })
+
+    return changes
+
+
+def extract_parsed_instruction(instruction):
+    if not isinstance(instruction, dict):
+        return None
+
+    parsed = instruction.get("parsed")
+
+    if not parsed:
+        return None
+
+    return parsed
+
+
+def collect_instructions(transaction):
+    message = transaction.get("transaction", {}).get(
+        "message",
+        {}
+    )
+
+    instructions = []
+
+    for instruction in message.get(
+        "instructions",
+        []
+    ):
+        instructions.append(instruction)
+
+    meta = transaction.get("meta") or {}
+
+    inner_instructions = meta.get(
+        "innerInstructions",
+        []
+    )
+
+    for group in inner_instructions:
+        for instruction in group.get(
+            "instructions",
+            []
+        ):
+            instructions.append(instruction)
+
+    return instructions
+
+
+def collect_transfers(transaction):
+    transfers = []
+
+    instructions = collect_instructions(
+        transaction
+    )
+
+    for instruction in instructions:
+        parsed = extract_parsed_instruction(
+            instruction
+        )
+
+        if not parsed:
+            continue
+
+        instruction_type = parsed.get("type")
+        info = parsed.get("info", {})
+
+        if instruction_type in [
+            "transfer",
+            "transferChecked"
+        ]:
+            source = (
+                info.get("source")
+                or info.get("from")
+            )
+
+            destination = (
+                info.get("destination")
+                or info.get("to")
+            )
+
+            amount = (
+                info.get("amount")
+                or info.get("tokenAmount", {})
+                .get("uiAmount")
+            )
+
+            mint = info.get("mint")
+
+            transfers.append({
+                "type": instruction_type,
+                "from": source,
+                "to": destination,
+                "amount": amount,
+                "mint": mint,
+                "authority": info.get(
+                    "authority"
+                ),
+            })
+
+    return transfers
+
+
+# =========================================================
+# TRADE CLASSIFICATION
+# =========================================================
+
+def classify_trade(
+    transaction,
+    fee_payer
+):
+    token_changes = get_token_balance_changes(
+        transaction
+    )
+
+    sol_changes = get_sol_balance_changes(
+        transaction
+    )
+
+    account_keys = get_account_keys(
+        transaction
+    )
+
+    wallet_sol_change = 0
+
+    for change in sol_changes:
+        index = change["account_index"]
+
+        if index >= len(account_keys):
+            continue
+
+        account = account_keys[index]
+
+        if isinstance(account, dict):
+            address = account.get("pubkey")
+        else:
+            address = account
+
+        if address == fee_payer:
+            wallet_sol_change = change["net_sol"]
+            break
+
+    wallet_token_changes = []
+
+    for change in token_changes:
+        if change["owner"] == fee_payer:
+            wallet_token_changes.append(change)
+
+    non_sol_changes = [
+        change
+        for change in token_changes
+        if change["mint"] !=
+        "So11111111111111111111111111111111111111112"
+    ]
+
+    target_change = None
+
+    for change in wallet_token_changes:
+        if change["mint"] != (
+            "So11111111111111111111111111111111111111112"
+        ):
+            target_change = change
+            break
+
+    if not target_change and wallet_token_changes:
+        target_change = wallet_token_changes[0]
+
+    if not target_change and non_sol_changes:
+        target_change = non_sol_changes[0]
+
+    if not target_change:
+        return {
+            "type": "⚪ UNCLEAR",
+            "target_mint": None,
+            "wallet_sol_change": wallet_sol_change,
+            "wallet_token_change": 0,
+            "position_before": None,
+            "position_after": None,
+            "position_percentage": None,
+            "position_impact": "Unknown",
+        }
+
+    token_change = target_change["net"]
+
+    position_before = target_change["before"]
+    position_after = target_change["after"]
+
+    position_percentage = None
+    position_impact = "Unknown"
+
+    if token_change < 0 and position_before > 0:
+        amount_sold = abs(token_change)
+
+        position_percentage = (
+            amount_sold / position_before
+        ) * 100
+
+        if position_percentage < 5:
+            position_impact = "🟢 Small position reduction"
+        elif position_percentage < 20:
+            position_impact = "🟡 Notable position reduction"
+        elif position_percentage < 50:
+            position_impact = "🟠 Large position reduction"
+        else:
+            position_impact = "🔴 Major position reduction"
+
+    if token_change > 0 and wallet_sol_change < 0:
+        trade_type = "🟢 POSSIBLE BUY"
+
+    elif token_change < 0 and wallet_sol_change > 0:
+        trade_type = "🔴 POSSIBLE SELL"
+
+    else:
+        trade_type = "⚪ UNCLEAR"
+
+    return {
+        "type": trade_type,
+        "target_mint": target_change["mint"],
+        "wallet_sol_change": wallet_sol_change,
+        "wallet_token_change": token_change,
+        "position_before": position_before,
+        "position_after": position_after,
+        "position_percentage": position_percentage,
+        "position_impact": position_impact,
+    }
+
+
+# =========================================================
+# /TX
+# =========================================================
+
+async def tx_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
@@ -980,9 +713,7 @@ async def tx(
         )
         return
 
-    signature = (
-        context.args[0].strip()
-    )
+    signature = context.args[0].strip()
 
     result, error = helius_rpc(
         "getTransaction",
@@ -1008,315 +739,264 @@ async def tx(
         )
         return
 
-    meta = result.get(
-        "meta"
-    ) or {}
+    meta = result.get("meta") or {}
 
-    status_text = (
+    status = (
         "❌ FAILED"
         if meta.get("err")
         else "✅ SUCCESS"
     )
 
-    slot = result.get(
-        "slot",
-        "Unknown"
-    )
-
+    slot = result.get("slot", "Unknown")
     block_time = result.get(
         "blockTime",
         "Unknown"
     )
 
-    fee = meta.get(
-        "fee",
-        0
+    fee = meta.get("fee", 0)
+
+    fee_sol = fee / 1_000_000_000
+
+    fee_payer = get_fee_payer(result)
+
+    analysis = classify_trade(
+        result,
+        fee_payer
     )
 
-    # =========================
-    # WALLET
-    # =========================
-
-    fee_payer = get_fee_payer(
+    token_changes = get_token_balance_changes(
         result
     )
 
-    # =========================
-    # BALANCE CHANGES
-    # =========================
-
-    token_changes = (
-        get_token_balance_changes(
-            result
-        )
+    sol_changes = get_sol_balance_changes(
+        result
     )
 
-    sol_changes = (
-        get_sol_balance_changes(
-            result
-        )
+    transfers = collect_transfers(
+        result
     )
 
-    # =========================
-    # TARGET MINT
-    # =========================
-
-    target_mints = []
-
-    for change in token_changes:
-        mint = change.get(
-            "mint"
-        )
-
-        if (
-            mint
-            and mint !=
-            "So11111111111111111111111111111111111111112"
-            and mint not in target_mints
-        ):
-            target_mints.append(
-                mint
-            )
-
-    target_mint = (
-        target_mints[0]
-        if target_mints
-        else None
+    account_keys = get_account_keys(
+        result
     )
-
-    # =========================
-    # CLASSIFY
-    # =========================
-
-    classification = "⚪ UNCLEAR"
-    wallet_sol_change = 0
-    wallet_token_change = 0
-
-    if (
-        fee_payer
-        and target_mint
-    ):
-        (
-            classification,
-            wallet_sol_change,
-            wallet_token_change
-        ) = classify_trade(
-            fee_payer,
-            target_mint,
-            token_changes,
-            sol_changes
-        )
-
-    # =========================
-    # TRANSFERS
-    # =========================
-
-    sol_transfers, token_transfers = (
-        collect_transfers(
-            result
-        )
-    )
-
-    # =========================
-    # MESSAGE
-    # =========================
 
     message = (
         "🔬 Transaction Intelligence\n\n"
-        f"📊 Status: {status_text}\n"
+        f"📊 Status: {status}\n"
         f"🧱 Slot: {slot}\n"
         f"⏱️ Block time: {block_time}\n"
-        f"💸 Fee: {fee:,} lamports\n\n"
-        f"👤 Fee payer:\n"
-        f"{fee_payer or 'Unknown'}\n\n"
-        f"🧠 Trade Analysis:\n"
-        f"{classification}\n"
+        f"💸 Fee: {fee:,} lamports "
+        f"({fee_sol:.9f} SOL)\n\n"
     )
 
-    if target_mint:
+    message += (
+        "👤 Fee payer:\n"
+        f"{fee_payer or 'Unknown'}\n\n"
+    )
+
+    # -----------------------------------------------------
+    # TRADE ANALYSIS
+    # -----------------------------------------------------
+
+    message += "🧠 Trade Analysis:\n"
+    message += f"{analysis['type']}\n"
+
+    if analysis["target_mint"]:
         message += (
-            f"🎯 Target mint:\n"
-            f"{target_mint}\n"
+            "🎯 Target mint:\n"
+            f"{analysis['target_mint']}\n"
         )
 
     message += (
-        f"💰 Wallet SOL change: "
-        f"{format_sol(wallet_sol_change):.9f} SOL\n"
-        f"🪙 Wallet token change: "
-        f"{wallet_token_change:,.6f}\n"
+        "💰 Wallet SOL change: "
+        f"{analysis['wallet_sol_change']:.9f} SOL\n"
     )
 
-    # =========================
-    # PRE/POST TOKEN CHANGES
-    # =========================
+    message += (
+        "🪙 Wallet token change: "
+        f"{analysis['wallet_token_change']:,.6f}\n"
+    )
+
+    # -----------------------------------------------------
+    # POSITION IMPACT
+    # -----------------------------------------------------
+
+    if analysis["position_before"] is not None:
+        message += "\n"
+        message += "📐 Position Impact:\n"
+
+        message += (
+            "Before: "
+            f"{analysis['position_before']:,.6f}\n"
+        )
+
+        message += (
+            "After: "
+            f"{analysis['position_after']:,.6f}\n"
+        )
+
+        if analysis["position_percentage"] is not None:
+            message += (
+                "Position sold: "
+                f"{analysis['position_percentage']:.2f}%\n"
+            )
+
+        message += (
+            f"Impact: "
+            f"{analysis['position_impact']}\n"
+        )
+
+    # -----------------------------------------------------
+    # TOKEN BALANCES
+    # -----------------------------------------------------
 
     if token_changes:
-        message += (
-            "\n📈 Token Balance Changes:\n"
-        )
-
-        shown = 0
+        message += "\n📈 Token Balance Changes:\n\n"
 
         for change in token_changes:
-            if shown >= 10:
-                break
+            message += (
+                f"Mint: "
+                f"{shorten_address(change['mint'], 10)}\n"
+            )
 
             message += (
-                f"\nMint: "
-                f"{shorten_address(change.get('mint'))}\n"
                 f"Account: "
-                f"{shorten_address(change.get('account'))}\n"
-                f"Owner: "
-                f"{shorten_address(change.get('owner'))}\n"
-                f"Before: "
-                f"{change.get('pre')}\n"
-                f"After: "
-                f"{change.get('post')}\n"
-                f"Net: "
-                f"{change.get('net'):+,.6f}\n"
+                f"{shorten_address(str(change['account_index']), 10)}\n"
             )
 
-            shown += 1
-    else:
-        message += (
-            "\n📈 Token Balance Changes:\n"
-            "None detected.\n"
-        )
-
-    # =========================
-    # SOL BALANCE CHANGES
-    # =========================
-
-    if sol_changes:
-        message += (
-            "\n💰 SOL Balance Changes:\n"
-        )
-
-        shown = 0
-
-        for change in sol_changes:
-            if shown >= 10:
-                break
-
-            message += (
-                f"\nAccount: "
-                f"{shorten_address(change.get('account'))}\n"
-                f"Net: "
-                f"{format_sol(change.get('net')):+.9f} SOL\n"
-            )
-
-            shown += 1
-
-    # =========================
-    # TOKEN TRANSFERS
-    # =========================
-
-    if token_transfers:
-        message += (
-            "\n🪙 Token Transfers:\n"
-        )
-
-        for index, transfer in enumerate(
-            token_transfers[:10],
-            start=1
-        ):
-            amount = transfer.get(
-                "ui_amount"
-            )
-
-            if amount is None:
-                amount = transfer.get(
-                    "amount",
-                    "Unknown"
+            if change["owner"]:
+                message += (
+                    f"Owner: "
+                    f"{shorten_address(change['owner'], 10)}\n"
                 )
 
             message += (
-                f"\n{index}. "
-                f"Amount: {amount}\n"
-                f"Mint: "
-                f"{shorten_address(transfer.get('mint'))}\n"
-                f"From: "
-                f"{shorten_address(transfer.get('source'))}\n"
-                f"To: "
-                f"{shorten_address(transfer.get('destination'))}\n"
-                f"Authority: "
-                f"{shorten_address(transfer.get('authority'))}\n"
+                f"Before: "
+                f"{change['before']:,.6f}\n"
             )
 
-    # =========================
+            message += (
+                f"After: "
+                f"{change['after']:,.6f}\n"
+            )
+
+            message += (
+                f"Net: "
+                f"{change['net']:+,.6f}\n\n"
+            )
+
+    # -----------------------------------------------------
+    # SOL BALANCES
+    # -----------------------------------------------------
+
+    if sol_changes:
+        message += "💰 SOL Balance Changes:\n\n"
+
+        for change in sol_changes:
+            index = change["account_index"]
+
+            if index < len(account_keys):
+                account = account_keys[index]
+
+                if isinstance(account, dict):
+                    address = account.get(
+                        "pubkey",
+                        "Unknown"
+                    )
+                else:
+                    address = account
+            else:
+                address = "Unknown"
+
+            message += (
+                f"Account: "
+                f"{shorten_address(address, 10)}\n"
+                f"Net: "
+                f"{change['net_sol']:+.9f} SOL\n\n"
+            )
+
+    # -----------------------------------------------------
+    # TRANSFERS
+    # -----------------------------------------------------
+
+    if transfers:
+        message += "🪙 Token Transfers:\n\n"
+
+        for number, transfer in enumerate(
+            transfers,
+            start=1
+        ):
+            message += (
+                f"{number}. "
+                f"Amount: {transfer['amount']}\n"
+            )
+
+            if transfer["mint"]:
+                message += (
+                    "Mint: "
+                    f"{shorten_address(transfer['mint'], 10)}\n"
+                )
+
+            if transfer["from"]:
+                message += (
+                    "From: "
+                    f"{shorten_address(transfer['from'], 10)}\n"
+                )
+
+            if transfer["to"]:
+                message += (
+                    "To: "
+                    f"{shorten_address(transfer['to'], 10)}\n"
+                )
+
+            if transfer["authority"]:
+                message += (
+                    "Authority: "
+                    f"{shorten_address(transfer['authority'], 10)}\n"
+                )
+
+            message += "\n"
+
+    # -----------------------------------------------------
     # PROGRAMS
-    # =========================
+    # -----------------------------------------------------
 
     programs = []
 
-    outer_instructions = (
+    for instruction in collect_instructions(
         result
-        .get("transaction", {})
-        .get("message", {})
-        .get("instructions", [])
-    )
-
-    for instruction in (
-        outer_instructions or []
     ):
         program_id = instruction.get(
             "programId"
         )
 
-        if (
-            program_id
-            and program_id not in programs
-        ):
-            programs.append(
-                program_id
+        if program_id and program_id not in programs:
+            programs.append(program_id)
+
+    if programs:
+        message += "🏗️ Programs Called:\n"
+
+        for program in programs:
+            message += (
+                f"• {shorten_address(program, 10)}\n"
             )
 
-    for group in (
-        meta.get(
-            "innerInstructions",
-            []
-        )
-        or []
-    ):
-        for instruction in (
-            group.get(
-                "instructions",
-                []
-            )
-            or []
-        ):
-            program_id = instruction.get(
-                "programId"
-            )
+        message += "\n"
 
-            if (
-                program_id
-                and program_id not in programs
-            ):
-                programs.append(
-                    program_id
-                )
+    # -----------------------------------------------------
+    # SIGNATURE
+    # -----------------------------------------------------
 
     message += (
-        "\n🏗️ Programs Called:\n"
-    )
-
-    for program_id in programs:
-        message += (
-            f"• "
-            f"{shorten_address(program_id, 12)}\n"
-        )
-
-    message += (
-        "\n🔗 Signature:\n"
+        "🔗 Signature:\n"
         f"{signature}"
     )
 
-    # Telegram limit
+    # Telegram has a message-size limit.
+    # Keep the important beginning if extremely large.
     if len(message) > 4000:
-        message = (
-            message[:3950]
-            + "\n\n…truncated."
+        message = message[:3950] + (
+            "\n\n⚠️ Output shortened."
         )
 
     await update.message.reply_text(
@@ -1324,86 +1004,88 @@ async def tx(
     )
 
 
-# =========================
+# =========================================================
 # MAIN
-# =========================
+# =========================================================
 
 def main():
     init_database()
-
-    threading.Thread(
-        target=run_web_server,
-        daemon=True
-    ).start()
 
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError(
             "TELEGRAM_BOT_TOKEN is missing."
         )
 
+    # Flask runs in the background.
+    # Telegram polling stays in the main thread.
+    threading.Thread(
+        target=run_web_server,
+        daemon=True
+    ).start()
+
     application = (
         Application.builder()
-        .token(
-            TELEGRAM_BOT_TOKEN
-        )
+        .token(TELEGRAM_BOT_TOKEN)
         .build()
     )
 
     application.add_handler(
         CommandHandler(
             "start",
-            start
+            start_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "ping",
-            ping
+            ping_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "status",
-            status
+            status_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "watch",
-            watch
+            watch_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "list",
-            list_tokens
+            list_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "info",
-            info
+            info_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "activity",
-            activity
+            activity_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "tx",
-            tx
+            tx_command
         )
     )
+
+    print("🟢 Pump Sentinel Telegram bot is running.")
 
     application.run_polling()
 
