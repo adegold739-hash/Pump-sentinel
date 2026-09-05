@@ -1,15 +1,18 @@
 import os
 import threading
 import requests
+
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from database import init_database, add_token, get_tokens
 from solana import get_token_info
-from whales import get_top_holders
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
+
 
 app = Flask(__name__)
 
@@ -26,51 +29,14 @@ def health():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🛡️ Pump Sentinel is online!\n\n"
+        "🛡️ Pump Sentinel\n\n"
         "Commands:\n"
         "/watch TOKEN_ADDRESS - Watch a token\n"
         "/list - Show watched tokens\n"
         "/status - Check connections\n"
         "/ping - Test the bot"
     )
-async def whales(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        tokens = get_tokens()
 
-        if not tokens:
-            await update.message.reply_text(
-                "📭 You're not watching any tokens yet."
-            )
-            return
-
-        token_address = tokens[-1]
-    else:
-        token_address = context.args[0].strip()
-
-    await update.message.reply_text(
-        "🐋 Finding the biggest holders..."
-    )
-
-    holders, error = get_top_holders(token_address)
-
-    if error:
-        await update.message.reply_text(
-            f"❌ {error}"
-        )
-        return
-
-    message = "🐋 TOP HOLDERS\n\n"
-
-    for number, (wallet, amount) in enumerate(holders, start=1):
-        message += (
-            f"{number}. `{wallet}`\n"
-            f"   Tokens: {amount:,}\n\n"
-        )
-
-    await update.message.reply_text(
-        message,
-        parse_mode="Markdown"
-        )
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -79,6 +45,7 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     if not HELIUS_API_KEY:
         await update.message.reply_text(
             "🔴 Helius API key is missing."
@@ -121,6 +88,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     if not context.args:
         await update.message.reply_text(
             "❌ Give me a Solana token address.\n\n"
@@ -172,6 +140,7 @@ async def list_tokens(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+
     tokens = get_tokens()
 
     if not tokens:
@@ -192,14 +161,22 @@ async def list_tokens(
 
 
 def run_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+
+    port = int(
+        os.environ.get("PORT", 10000)
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
 
 
 def main():
+
     print("🛡️ Starting Pump Sentinel...")
 
-    if not TOKEN:
+    if not TELEGRAM_BOT_TOKEN:
         raise ValueError(
             "TELEGRAM_BOT_TOKEN is missing."
         )
@@ -211,15 +188,36 @@ def main():
         daemon=True
     ).start()
 
-    bot = Application.builder().token(TOKEN).build()
+    bot = (
+        Application
+        .builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .build()
+    )
 
-    bot.add_handler(CommandHandler("start", start))
-    bot.add_handler(CommandHandler("ping", ping))
-    bot.add_handler(CommandHandler("status", status))
-bot.add_handler(CommandHandler("watch", watch))
-bot.add_handler(CommandHandler("list", list_tokens))
-bot.add_handler(CommandHandler("whales", whales))
-    print("🛡️ Pump Sentinel Telegram bot is running...")
+    bot.add_handler(
+        CommandHandler("start", start)
+    )
+
+    bot.add_handler(
+        CommandHandler("ping", ping)
+    )
+
+    bot.add_handler(
+        CommandHandler("status", status)
+    )
+
+    bot.add_handler(
+        CommandHandler("watch", watch)
+    )
+
+    bot.add_handler(
+        CommandHandler("list", list_tokens)
+    )
+
+    print(
+        "🛡️ Pump Sentinel Telegram bot is running..."
+    )
 
     bot.run_polling()
 
