@@ -13,6 +13,7 @@ from solana import get_token_info
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 
+
 app = Flask(__name__)
 
 
@@ -166,23 +167,18 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    name = token_info["name"]
-    symbol = token_info["symbol"]
-    supply = token_info["supply"]
-    decimals = token_info["decimals"]
-
     watched_tokens = get_tokens()
     watching = token_address in watched_tokens
 
     watching_status = "👀 YES" if watching else "❌ NO"
 
     await update.message.reply_text(
-        f"🪙 {name}\n"
-        f"🔤 Symbol: {symbol}\n\n"
+        f"🪙 {token_info['name']}\n"
+        f"🔤 Symbol: {token_info['symbol']}\n\n"
         f"📍 Address:\n"
         f"`{token_address}`\n\n"
-        f"💰 Supply: {supply}\n"
-        f"🔢 Decimals: {decimals}\n"
+        f"💰 Supply: {token_info['supply']}\n"
+        f"🔢 Decimals: {token_info['decimals']}\n"
         f"👀 Watching: {watching_status}",
         parse_mode="Markdown"
     )
@@ -212,9 +208,36 @@ async def list_tokens(
     )
 
 
-def run_telegram_bot():
+def run_web_server():
 
-    print("🛡️ Starting Telegram bot...")
+    port = int(
+        os.environ.get("PORT", 10000)
+    )
+
+    print(f"🌐 Web server starting on port {port}...")
+
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        use_reloader=False
+    )
+
+
+def main():
+
+    print("🛡️ Starting Pump Sentinel...")
+
+    if not TELEGRAM_BOT_TOKEN:
+        raise ValueError(
+            "TELEGRAM_BOT_TOKEN is missing."
+        )
+
+    init_database()
+
+    threading.Thread(
+        target=run_web_server,
+        daemon=True
+    ).start()
 
     bot = (
         Application
@@ -247,39 +270,9 @@ def run_telegram_bot():
         CommandHandler("list", list_tokens)
     )
 
-    print("🟢 Telegram bot is running...")
+    print("🟢 Telegram bot is starting...")
 
     bot.run_polling()
-
-
-def main():
-
-    print("🛡️ Starting Pump Sentinel...")
-
-    if not TELEGRAM_BOT_TOKEN:
-        raise ValueError(
-            "TELEGRAM_BOT_TOKEN is missing."
-        )
-
-    init_database()
-
-    telegram_thread = threading.Thread(
-        target=run_telegram_bot,
-        daemon=True
-    )
-
-    telegram_thread.start()
-
-    port = int(
-        os.environ.get("PORT", 10000)
-    )
-
-    print(f"🌐 Starting web server on port {port}...")
-
-    app.run(
-        host="0.0.0.0",
-        port=port
-    )
 
 
 if __name__ == "__main__":
