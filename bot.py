@@ -744,8 +744,6 @@ def classify_transaction(
 
     # Prefer the fee payer if they are one
     # of the token owners.
-    trader = None
-
     if fee_payer in owner_changes:
         trader = fee_payer
     else:
@@ -764,20 +762,25 @@ def classify_transaction(
     # Find the fee payer's SOL movement.
     sol_delta = 0
 
-    account_index = None
-
-    # In Solana transactions the fee payer is
-    # normally account index 0.
     for change in sol_changes:
         if change.get("account_index") == 0:
-            account_index = 0
             sol_delta = change.get(
                 "net_sol",
                 0,
             )
             break
 
-    # Ignore tiny fee-only changes.
+    # The fee payer's SOL balance can decrease
+    # simply because of the transaction fee.
+    #
+    # If the SOL decrease is approximately only
+    # the transaction fee, we should NOT call this
+    # a BUY.
+    #
+    # Likewise, a token decrease with no positive
+    # SOL movement should not automatically become
+    # a SELL.
+
     meaningful_sol = abs(sol_delta) > 0.00001
 
     if token_delta > 0 and sol_delta < -0.00001:
@@ -799,6 +802,17 @@ def classify_transaction(
     if token_delta != 0 and not meaningful_sol:
         return (
             "TRANSFER",
+            trader,
+            token_delta,
+            sol_delta,
+        )
+
+    # Token movement plus a SOL decrease,
+    # without evidence of SOL being received,
+    # is not enough to confidently call a SELL.
+    if token_delta < 0 and sol_delta < 0:
+        return (
+            "UNKNOWN",
             trader,
             token_delta,
             sol_delta,
