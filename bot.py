@@ -770,17 +770,6 @@ def classify_transaction(
             )
             break
 
-    # The fee payer's SOL balance can decrease
-    # simply because of the transaction fee.
-    #
-    # If the SOL decrease is approximately only
-    # the transaction fee, we should NOT call this
-    # a BUY.
-    #
-    # Likewise, a token decrease with no positive
-    # SOL movement should not automatically become
-    # a SELL.
-
     meaningful_sol = abs(sol_delta) > 0.00001
 
     if token_delta > 0 and sol_delta < -0.00001:
@@ -807,9 +796,6 @@ def classify_transaction(
             sol_delta,
         )
 
-    # Token movement plus a SOL decrease,
-    # without evidence of SOL being received,
-    # is not enough to confidently call a SELL.
     if token_delta < 0 and sol_delta < 0:
         return (
             "UNKNOWN",
