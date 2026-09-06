@@ -3,10 +3,17 @@ import threading
 
 import requests
 from flask import Flask
-from telegram import Update
+
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
+
 from telegram.ext import (
     Application,
     CommandHandler,
+    CallbackQueryHandler,
     ContextTypes,
 )
 
@@ -129,18 +136,159 @@ async def start_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "🔎 Analyze Transaction",
+                callback_data="tx_help",
+            ),
+            InlineKeyboardButton(
+                "🎯 Watch Token",
+                callback_data="watch_help",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "📊 My Watchlist",
+                callback_data="list",
+            ),
+            InlineKeyboardButton(
+                "🪙 Token Info",
+                callback_data="info_help",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "📡 Activity",
+                callback_data="activity_help",
+            ),
+            InlineKeyboardButton(
+                "⚙️ Status",
+                callback_data="status",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "❓ Help",
+                callback_data="help",
+            ),
+        ],
+    ]
+
     await update.message.reply_text(
-        "🟢 Pump Sentinel\n\n"
-        "Your Solana memecoin risk-monitoring bot is online.\n\n"
-        "Commands:\n"
-        "/status - Check bot status\n"
-        "/ping - Test Telegram\n"
-        "/watch <token> - Watch a token\n"
-        "/list - List watched tokens\n"
-        "/info <token> - Token information\n"
-        "/activity <token> - Recent transactions\n"
-        "/tx <signature> - Transaction intelligence"
+        "🛡️ Pump Sentinel\n\n"
+        "Your Solana on-chain intelligence assistant.\n\n"
+        "Analyze transactions, monitor tokens "
+        "and investigate on-chain activity.\n\n"
+        "What do you want to do?",
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
+
+
+# =========================================================
+# INLINE MENU CALLBACKS
+# =========================================================
+
+async def menu_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    query = update.callback_query
+
+    await query.answer()
+
+    if query.data == "tx_help":
+        await query.message.reply_text(
+            "🔎 Analyze Transaction\n\n"
+            "Send a Solana transaction signature:\n\n"
+            "/tx <signature>\n\n"
+            "Pump Sentinel will analyze the transaction "
+            "and identify the detected activity."
+        )
+
+    elif query.data == "watch_help":
+        await query.message.reply_text(
+            "🎯 Watch Token\n\n"
+            "Add a Solana token to your watchlist:\n\n"
+            "/watch <token_address>\n\n"
+            "Use /list to see your watched tokens."
+        )
+
+    elif query.data == "list":
+        tokens = get_tokens()
+
+        if not tokens:
+            await query.message.reply_text(
+                "📭 Your watchlist is empty.\n\n"
+                "Use /watch <token_address> to add a token."
+            )
+            return
+
+        message = "📊 Your Watchlist\n\n"
+
+        for number, token in enumerate(tokens, start=1):
+            message += (
+                f"{number}. {shorten_address(token, 10)}\n"
+                f"`{token}`\n\n"
+            )
+
+        await query.message.reply_text(
+            message,
+            parse_mode="Markdown",
+        )
+
+    elif query.data == "info_help":
+        await query.message.reply_text(
+            "🪙 Token Info\n\n"
+            "Get token intelligence using:\n\n"
+            "/info <token_address>"
+        )
+
+    elif query.data == "activity_help":
+        await query.message.reply_text(
+            "📡 Activity\n\n"
+            "Check recent activity for a token:\n\n"
+            "/activity <token_address>"
+        )
+
+    elif query.data == "status":
+        telegram_status = (
+            "ONLINE ✅"
+            if TELEGRAM_BOT_TOKEN
+            else "MISSING ❌"
+        )
+
+        helius_status = (
+            "CONNECTED ✅"
+            if HELIUS_API_KEY
+            else "MISSING ❌"
+        )
+
+        await query.message.reply_text(
+            "🟢 Pump Sentinel Status\n\n"
+            f"Telegram: {telegram_status}\n"
+            f"Helius: {helius_status}\n\n"
+            "Core systems are operational."
+        )
+
+    elif query.data == "help":
+        await query.message.reply_text(
+            "❓ Pump Sentinel Help\n\n"
+            "🔎 /tx <signature>\n"
+            "Analyze a Solana transaction.\n\n"
+            "🎯 /watch <token>\n"
+            "Add a token to your watchlist.\n\n"
+            "📊 /list\n"
+            "View watched tokens.\n\n"
+            "🪙 /info <token>\n"
+            "View token information.\n\n"
+            "📡 /activity <token>\n"
+            "View recent token activity.\n\n"
+            "⚙️ /status\n"
+            "Check Pump Sentinel systems.\n\n"
+            "🏓 /ping\n"
+            "Test the Telegram connection."
+        )
 
 
 # =========================================================
@@ -704,111 +852,208 @@ def classify_transaction(
     token_changes,
     sol_changes,
     fee_payer,
+    instructions,
+    account_keys,
 ):
     """
-    Basic transaction classification.
+    Classify a transaction using per-mint token balance changes
+    and actual SOL movement tied to the trader.
 
     BUY:
-    The fee payer receives tokens and spends SOL.
+    Trader receives tokens and genuinely sends SOL.
 
     SELL:
-    The fee payer loses tokens and receives SOL.
+    Trader sends tokens and genuinely receives SOL.
 
     TRANSFER:
-    Token movement without meaningful SOL movement.
+    Tokens move without a corresponding SOL transfer.
 
     UNKNOWN:
     Pattern cannot be confidently classified.
     """
 
     if not token_changes:
-        return "UNKNOWN", None, 0, None
+        return "UNKNOWN", None, 0, 0
 
-    # Calculate token changes by wallet owner.
-    owner_changes = {}
+    owner_mint_changes = {}
 
     for change in token_changes:
         owner = change.get("owner")
+        mint = change.get("mint")
         net = change.get("net", 0)
 
         if not owner:
             continue
 
-        owner_changes[owner] = (
-            owner_changes.get(owner, 0)
-            + net
+        key = (owner, mint)
+
+        owner_mint_changes[key] = (
+            owner_mint_changes.get(key, 0) + net
         )
 
-    if not owner_changes:
-        return "UNKNOWN", None, 0, None
+    if not owner_mint_changes:
+        return "UNKNOWN", None, 0, 0
 
-    # Prefer the fee payer if they are one
-    # of the token owners.
-    if fee_payer in owner_changes:
+    owners_with_changes = {
+        owner for owner, _mint in owner_mint_changes
+    }
+
+    if fee_payer in owners_with_changes:
         trader = fee_payer
+
     else:
+        totals = {}
+
+        for (
+            owner,
+            _mint,
+        ), net in owner_mint_changes.items():
+
+            totals[owner] = (
+                totals.get(owner, 0)
+                + abs(net)
+            )
+
         trader = max(
-            owner_changes,
-            key=lambda owner: abs(
-                owner_changes[owner]
-            ),
+            totals,
+            key=totals.get,
         )
 
-    token_delta = owner_changes.get(
-        trader,
-        0,
+    trader_mint_deltas = {
+        mint: net
+        for (
+            owner,
+            mint,
+        ), net in owner_mint_changes.items()
+        if owner == trader
+    }
+
+    if not trader_mint_deltas:
+        return "UNKNOWN", trader, 0, 0
+
+    token_delta = max(
+        trader_mint_deltas.values(),
+        key=abs,
     )
 
-    # Find the fee payer's SOL movement.
-    sol_delta = 0
+    sol_sent = 0
+    sol_received = 0
 
-    for change in sol_changes:
-        if change.get("account_index") == 0:
-            sol_delta = change.get(
-                "net_sol",
-                0,
+    for instruction in instructions:
+
+        if not isinstance(instruction, dict):
+            continue
+
+        if instruction.get("program") != "system":
+            continue
+
+        parsed = instruction.get("parsed")
+
+        if not isinstance(parsed, dict):
+            continue
+
+        if parsed.get("type") != "transfer":
+            continue
+
+        info = parsed.get(
+            "info",
+            {},
+        )
+
+        if not isinstance(info, dict):
+            continue
+
+        source = info.get("source")
+        destination = info.get("destination")
+        lamports = info.get(
+            "lamports",
+            0,
+        )
+
+        try:
+            sol_amount = (
+                int(lamports)
+                / 1_000_000_000
             )
-            break
 
-    meaningful_sol = abs(sol_delta) > 0.00001
+        except (
+            TypeError,
+            ValueError,
+        ):
+            continue
 
-    if token_delta > 0 and sol_delta < -0.00001:
+        if source == trader:
+            sol_sent += sol_amount
+
+        if destination == trader:
+            sol_received += sol_amount
+
+    # WSOL fallback.
+    if sol_received == 0:
+
+        trader_index = None
+
+        for index, key in enumerate(
+            account_keys
+        ):
+
+            if get_pubkey(key) == trader:
+                trader_index = index
+                break
+
+        if trader_index is not None:
+
+            for change in sol_changes:
+
+                if (
+                    change.get("account_index")
+                    == trader_index
+                ):
+
+                    observed_net = change.get(
+                        "net_sol",
+                        0,
+                    )
+
+                    if observed_net > 0.00001:
+                        sol_received = observed_net
+
+                    break
+
+    net_sol = (
+        sol_received
+        - sol_sent
+    )
+
+    if token_delta > 0 and net_sol < 0:
         return (
             "BUY",
             trader,
             token_delta,
-            sol_delta,
+            net_sol,
         )
 
-    if token_delta < 0 and sol_delta > 0.00001:
+    if token_delta < 0 and net_sol > 0:
         return (
             "SELL",
             trader,
             token_delta,
-            sol_delta,
+            net_sol,
         )
 
-    if token_delta != 0 and not meaningful_sol:
+    if token_delta != 0 and net_sol == 0:
         return (
             "TRANSFER",
             trader,
             token_delta,
-            sol_delta,
-        )
-
-    if token_delta < 0 and sol_delta < 0:
-        return (
-            "UNKNOWN",
-            trader,
-            token_delta,
-            sol_delta,
+            0,
         )
 
     return (
         "UNKNOWN",
         trader,
         token_delta,
-        sol_delta,
+        net_sol,
     )
 
 
@@ -816,31 +1061,32 @@ def classify_transaction(
 # TRANSACTION ANALYSIS
 # =========================================================
 
-def analyze_transaction(transaction, signature):
-    meta = transaction.get("meta") or {}
+def analyze_transaction(
+    transaction,
+    signature,
+):
+    meta = transaction.get(
+        "meta"
+    ) or {}
 
-    message = (
-        transaction.get(
-            "transaction",
-            {},
-        ).get(
-            "message",
-            {},
-        )
+    fee_payer = get_fee_payer(
+        transaction
     )
-
-    fee_payer = get_fee_payer(transaction)
 
     account_keys = get_account_keys(
         transaction
     )
 
-    token_changes = get_token_balance_changes(
-        transaction
+    token_changes = (
+        get_token_balance_changes(
+            transaction
+        )
     )
 
-    sol_changes = get_sol_balance_changes(
-        transaction
+    sol_changes = (
+        get_sol_balance_changes(
+            transaction
+        )
     )
 
     transfers = collect_transfers(
@@ -851,12 +1097,17 @@ def analyze_transaction(transaction, signature):
         transaction
     )
 
-    classification, trader, token_delta, sol_delta = (
-        classify_transaction(
-            token_changes,
-            sol_changes,
-            fee_payer,
-        )
+    (
+        classification,
+        trader,
+        token_delta,
+        sol_delta,
+    ) = classify_transaction(
+        token_changes,
+        sol_changes,
+        fee_payer,
+        instructions,
+        account_keys,
     )
 
     fee_lamports = meta.get(
@@ -864,7 +1115,10 @@ def analyze_transaction(transaction, signature):
         0,
     )
 
-    fee_sol = fee_lamports / 1_000_000_000
+    fee_sol = (
+        fee_lamports
+        / 1_000_000_000
+    )
 
     return {
         "signature": signature,
@@ -921,13 +1175,18 @@ def format_transaction_report(
         "🔬 Transaction Intelligence",
         "",
         f"📊 Status: {analysis['status']}",
-        f"💸 Fee: {analysis['fee_lamports']:,} lamports "
-        f"({analysis['fee_sol']:.9f} SOL)",
+        (
+            f"💸 Fee: {analysis['fee_lamports']:,} "
+            f"lamports "
+            f"({analysis['fee_sol']:.9f} SOL)"
+        ),
         "",
         f"🧠 Classification: {classification_text}",
     ]
 
-    trader = analysis.get("trader")
+    trader = analysis.get(
+        "trader"
+    )
 
     if trader:
         lines.extend([
@@ -947,7 +1206,10 @@ def format_transaction_report(
     if token_delta != 0:
         lines.extend([
             "",
-            f"🪙 Token Change: {token_delta:+,.12f}",
+            (
+                f"🪙 Token Change: "
+                f"{token_delta:+,.12f}"
+            ),
         ])
 
     sol_delta = analysis.get(
@@ -957,7 +1219,7 @@ def format_transaction_report(
 
     if sol_delta != 0:
         lines.append(
-            f"◎ Trader SOL Change: "
+            "◎ Trader SOL Change: "
             f"{format_sol(sol_delta)}"
         )
 
@@ -972,6 +1234,7 @@ def format_transaction_report(
         ])
 
         for transfer in transfers[:10]:
+
             amount = transfer.get(
                 "display_amount"
             )
@@ -993,8 +1256,12 @@ def format_transaction_report(
 
     sol_changes = [
         change
-        for change in analysis["sol_changes"]
-        if abs(change["net_sol"]) > 0
+        for change in analysis[
+            "sol_changes"
+        ]
+        if abs(
+            change["net_sol"]
+        ) > 0
     ]
 
     if sol_changes:
@@ -1004,6 +1271,7 @@ def format_transaction_report(
         ])
 
         for change in sol_changes[:10]:
+
             lines.append(
                 f"• Account #{change['account_index']}: "
                 f"{format_sol(change['net_sol'])}"
@@ -1080,6 +1348,7 @@ async def tx_command(
 # =========================================================
 
 def create_application():
+
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError(
             "TELEGRAM_BOT_TOKEN is missing."
@@ -1091,6 +1360,7 @@ def create_application():
         .build()
     )
 
+    # START
     application.add_handler(
         CommandHandler(
             "start",
@@ -1098,6 +1368,14 @@ def create_application():
         )
     )
 
+    # INLINE UX MENU
+    application.add_handler(
+        CallbackQueryHandler(
+            menu_callback
+        )
+    )
+
+    # EXISTING COMMANDS
     application.add_handler(
         CommandHandler(
             "ping",
