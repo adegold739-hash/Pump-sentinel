@@ -597,11 +597,14 @@ def collect_transfers(transaction):
             instruction
         )
 
-        if not parsed:
+        if not isinstance(parsed, dict):
             continue
 
         instruction_type = parsed.get("type")
         info = parsed.get("info", {})
+
+        if not isinstance(info, dict):
+            continue
 
         program = instruction.get("program")
         program_id = instruction.get("programId")
@@ -640,6 +643,9 @@ def collect_transfers(transaction):
             "tokenAmount",
             {},
         )
+
+        if not isinstance(token_amount_info, dict):
+            token_amount_info = {}
 
         ui_amount = token_amount_info.get(
             "uiAmount"
